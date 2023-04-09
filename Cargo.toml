@@ -1,0 +1,34 @@
+[package]
+name = "autostream-prototype"
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+# strip = true
+
+[dependencies]
+async-std = "1.12.0"
+chess = "3.2.0"
+chrono = "0.4.24"
+criterion = "0.4.0"
+crossbeam = "0.8.2"
+crossbeam-channel = "0.5.7"
+env_logger = "0.10.0"
+font-kit = "0.11.0"
+fontdue = "0.7.2"
+lazy_static = "1.4.0"
+lichess-api = { git = "https://github.com/ion232/lichess-api", branch = "main" }
+log = "0.4.17"
+minifb = "0.24.0"
+pathfinder_geometry = "0.5.1"
+png = "0.17.7"
+rand = "0.8.5"
+raqote = "0.8.2"
+regex = "1.7.1"
+reqwest = "0.11.14"
+rgb = "0.8.36"
+rodio = "0.17.1"
+thiserror = "1.0.39"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "time"] }
+twitch-irc = "5.0.0"
+twitch_api = "0.7.0-rc.4"
