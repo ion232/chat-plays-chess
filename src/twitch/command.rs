@@ -3,6 +3,7 @@ use std::str::FromStr;
 use lazy_static::lazy_static;
 use regex::Regex;
 
+#[derive(Debug)]
 pub struct ChatCommand {
     user: String,
     command: Command,
@@ -14,7 +15,7 @@ impl ToString for ChatCommand {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Command {
     VoteGame { action: String },
     VoteSetting { setting: Setting, on: bool },
@@ -34,7 +35,7 @@ impl ToString for Command {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Setting {
     GameMode(GameMode),
 }
@@ -49,7 +50,7 @@ impl ToString for Setting {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum GameMode {
     Blitz,
     Rapid,

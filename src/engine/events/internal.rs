@@ -2,8 +2,8 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::lichess::action::Action as LichessAction;
 use crate::lichess::game::GameId;
-use crate::stream::model::Command;
 use crate::twitch::action::Action as TwitchAction;
+use crate::twitch::events::ChatCommand;
 
 pub struct EventQueue {
     sender: Sender<Event>,
@@ -32,7 +32,7 @@ pub enum Action {
 
 #[derive(Debug)]
 pub enum Notification {
-    ChatCommand { command: Command },
+    ChatCommand(ChatCommand),
     VotingFinished,
     OutboundChallengeNullified,
     GameVotesChanged,

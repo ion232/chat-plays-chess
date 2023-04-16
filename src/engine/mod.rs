@@ -147,7 +147,8 @@ impl Engine {
 
     fn process_notification(&mut self, notification: Notification) {
         match notification {
-            Notification::ChatCommand { command } => {
+            Notification::ChatCommand(chat_command) => {
+                let command = Command::new(chat_command.user, chat_command.command.to_string());
                 let notification = stream::Notification::ChatCommand { command };
                 _ = self.stream_events.send(stream::Event::Notification(notification));
             }
@@ -346,14 +347,6 @@ impl Engine {
     }
 
     async fn make_move(&mut self, game_id: String) {
-        // fn reschedule_move(event_sender: &mut EventSender, game_id: &str) {
-        //     log::info!("Rescheduling move for game {}", game_id);
-        //     let handle = tokio::task::spawn(async move {
-        //         tokio::time::sleep(Duration::from_secs(10)).await;
-        //     });
-        //     event_sender.send_action(Action::Lichess(LichessAction::make_move(game_id.to_string())))
-        // }
-
         let Some(vote) = self.game_votes.get_top_vote() else {
             let Some(game) = self.game_manager.game(&game_id) else {
                 return;
@@ -395,8 +388,6 @@ impl Engine {
 
         if success {
             self.game_votes.reset();
-        } else {
-            // reschedule_move(self.internal_queue.event_sender(), &game_id);
         }
     }
 
@@ -452,8 +443,8 @@ impl Engine {
 
     fn process_twitch_event(&mut self, event: TwitchEvent) {
         match event {
-            TwitchEvent::ChatCommand(ChatCommand { user, command }) => {
-                self.process_chat_command(user, command);
+            TwitchEvent::ChatCommand(chat_command) => {
+                self.process_chat_command(chat_command);
             }
             TwitchEvent::ChatMessage(_) => {
                 // Don't need these - won't be showing them all on stream, for obvious reasons.
@@ -462,18 +453,19 @@ impl Engine {
         }
     }
 
-    fn process_chat_command(&mut self, user: String, command: TwitchCommand) {
-        self.internal_queue.event_sender().send_notification(Notification::ChatCommand {
-            command: Command::new(user.to_string(), command.to_string()),
-        });
+    fn process_chat_command(&mut self, chat_command: ChatCommand) {
+        self.internal_queue.event_sender().send_notification(Notification::ChatCommand(chat_command.clone()));
+
+        let ChatCommand { user, command } = chat_command;
 
         match command {
-            crate::twitch::command::Command::VoteGame { action } => {
+            TwitchCommand::VoteGame { action } => {
                 self.process_game_vote(user, action);
-            }
-            crate::twitch::command::Command::VoteSetting { setting, on } => {
+            },
+            TwitchCommand::VoteSetting { setting, on } => {
                 self.process_settings_vote(user, setting, on);
-            }
+
+            },
         }
     }
 

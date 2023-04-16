@@ -23,7 +23,7 @@ pub enum Event {
     ChatMessage(ChatMessage),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ChatCommand {
     pub user: String,
     pub command: Command,
