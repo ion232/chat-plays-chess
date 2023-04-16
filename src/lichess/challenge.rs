@@ -95,13 +95,18 @@ impl ChallengeManager {
     }
 
     pub fn nullify_challenge(&mut self, challenge: ChallengeJson) {
-        let Some(outbound) = &self.outbound else {
-            return;
+        let mut is_outbound = false;
+
+        if let Some(outbound) = &self.outbound {
+            if challenge.base.id == outbound.challenge.challenge.base.id {
+                self.event_sender.send_notification(Notification::OutboundChallengeNullified);
+                outbound.cancel_handle.abort();
+                is_outbound = true;
+            }
         };
 
-        if challenge.base.id == outbound.challenge.challenge.base.id {
-            self.event_sender.send_notification(Notification::OutboundChallengeNullified);
-            outbound.cancel_handle.abort();
+        if is_outbound {
+            self.outbound = None;
         }
     }
 }

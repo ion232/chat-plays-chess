@@ -15,11 +15,13 @@ pub struct EventSender {
     sender: Sender<Event>,
 }
 
+#[derive(Debug)]
 pub enum Event {
     Action(Action),
     Notification(Notification),
 }
 
+#[derive(Debug)]
 pub enum Action {
     Lichess(LichessAction),
     Twitch(TwitchAction),
@@ -28,6 +30,7 @@ pub enum Action {
     Shutdown,
 }
 
+#[derive(Debug)]
 pub enum Notification {
     ChatCommand { command: Command },
     VotingFinished,
@@ -38,6 +41,7 @@ pub enum Notification {
     Game(GameNotification),
 }
 
+#[derive(Debug)]
 pub enum GameNotification {
     NewCurrentGame,
     GameStarted { game_id: GameId },
@@ -79,39 +83,17 @@ impl EventSender {
     }
 
     pub fn send_action(&mut self, action: Action) {
-        // let name = match &action {
-        //     Action::Lichess(action) => match action {
-        //         LichessAction::Account(action) => match action {
-        //             AccountAction::AcceptChallenge { challenge_id } => {
-        //                 format!("challenge accept ({})", challenge_id)
-        //             }
-        //             AccountAction::CancelChallenge { challenge_id } => {
-        //                 format!("challenge cancel ({})", challenge_id)
-        //             }
-        //             AccountAction::DeclineChallenge { challenge_id, .. } => {
-        //                 format!("challenge decline ({})", challenge_id)
-        //             }
-        //             AccountAction::ChallengeRandomBot => "challenge bot".to_string(),
-        //         },
-        //         LichessAction::Game { game_id, action } => match action {
-        //             GameAction::Abort => format!("abort game ({})", game_id),
-        //             GameAction::Move => format!("game move ({})", game_id),
-        //             GameAction::OfferDraw => format!("draw game ({})", game_id),
-        //             GameAction::Resign => format!("resign game ({})", game_id),
-        //         },
-        //     },
-        //     Action::Twitch(..) => "twitch".to_string(),
-        //     Action::ResetVoteTimer => "reset vote timer".to_string(),
-        //     Action::SwitchGame(..) => "switch game".to_string(),
-        //     Action::Shutdown => "shutdown".to_string(),
-        // };
-        // log::info!("Sending {} action", name);
-
         _ = self.sender.send(Event::Action(action));
     }
 
     pub fn send_notification(&mut self, notification: Notification) {
         _ = self.sender.send(Event::Notification(notification));
+    }
+}
+
+impl ToString for Action {
+    fn to_string(&self) -> String {
+        format!("{self:?}")
     }
 }
 

@@ -81,15 +81,11 @@ impl GameManager {
     }
 
     pub fn current_game(&self) -> Option<&Game> {
-        let Some(game_id) = &self.current_game_id else {
+        let Some(current_game_id) = &self.current_game_id else {
             return None;
         };
 
-        if let Some(game) = self.games.get(game_id) {
-            game.into()
-        } else {
-            None
-        }
+        self.games.get(current_game_id)
     }
 
     pub fn oldest_game_id(&self) -> Option<String> {
@@ -108,6 +104,8 @@ impl GameManager {
     }
 
     pub fn switch_game(&mut self, game_id: &str) {
+        log::info!("Switching to game {}", &game_id);
+
         let game_id = game_id.to_string();
         if self.games.contains_key(&game_id) {
             self.current_game_id = game_id.to_string().into();
@@ -142,14 +140,17 @@ impl GameManager {
         self.event_sender.send_notification(Notification::Game(GameNotification::GameFinished));
 
         let Some(finished_game) = self.games.remove(&game_id) else {
+            log::warn!("[GameManager] Failed to remove game {} during process game finish", &game_id);
             return;
         };
 
         let Some(current_game_id) = &self.current_game_id else {
+            log::warn!("[GameManager] Failed to get current game id {} during process game finish", &game_id);
             return;
         };
 
         if finished_game.game_id == *current_game_id {
+            log::info!("[GameManager] Removing current game id {}", finished_game.game_id);
             self.current_game_id = None;
             self.last_finished_game = finished_game.into();
         }

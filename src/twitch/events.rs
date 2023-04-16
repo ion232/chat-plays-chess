@@ -1,7 +1,6 @@
 use std::str::FromStr;
 
 use crossbeam_channel::Sender;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::task::JoinHandle;
 
 use twitch_irc::login::StaticLoginCredentials;
@@ -18,16 +17,19 @@ pub struct EventManager {
     twitch_irc_handle: Option<JoinHandle<()>>,
 }
 
+#[derive(Debug)]
 pub enum Event {
     ChatCommand(ChatCommand),
     ChatMessage(ChatMessage),
 }
 
+#[derive(Debug)]
 pub struct ChatCommand {
     pub user: String,
     pub command: Command,
 }
 
+#[derive(Debug)]
 pub struct ChatMessage {
     pub user: String,
     pub message: String,
@@ -42,65 +44,36 @@ impl EventManager {
         &self,
         sender: Sender<Result<Event>>,
     ) -> Result<JoinHandle<()>> {
-        self.stream_artifical_twitch_events(sender).await
-    }
-
-    async fn stream_artifical_twitch_events(
-        &self,
-        sender: Sender<Result<Event>>,
-    ) -> Result<JoinHandle<()>> {
-        let sender = sender.clone();
-        let handle = tokio::spawn(async move {
-            let stdin = tokio::io::stdin();
-            let mut reader = BufReader::new(stdin);
-            let mut line = "".to_string();
-
-            while let Ok(_) = reader.read_line(&mut line).await {
-                let (user, message) = line.split_once(":").unwrap();
-                let twitch_event = if let Ok(command) = Command::from_str(&message) {
-                    Event::ChatCommand(ChatCommand { user: user.to_string(), command })
-                } else {
-                    Event::ChatMessage(ChatMessage {
-                        user: user.to_string(),
-                        message: message.to_string(),
-                    })
-                };
-                // let twitch_event = crate::engine::events::Event::TwitchEvent(twitch_event);
-                sender.send(Ok(twitch_event)).unwrap_or_default()
-            }
-        });
-
-        Ok(handle)
-    }
-
-    async fn stream_real_twitch_events(
-        &self,
-        sender: Sender<Result<Event>>,
-    ) -> Result<JoinHandle<()>> {
-        let config = ClientConfig::default();
-        let (mut incoming_messages, client) =
-            TwitchIRCClient::<SecureTCPTransport, StaticLoginCredentials>::new(config);
+        let channel = self.context.channel_name.to_string();
         let sender = sender.clone();
 
         let handle = tokio::spawn(async move {
+            let config = ClientConfig::default();
+            let (mut incoming_messages, client) =
+                TwitchIRCClient::<SecureTCPTransport, StaticLoginCredentials>::new(config);
+
+            client.join(channel).unwrap();
+
             while let Some(message) = incoming_messages.recv().await {
                 match message {
                     ServerMessage::Privmsg(private_message) => {
                         let user = private_message.sender.name;
                         let message = private_message.message_text;
+
                         let twitch_event = if let Ok(command) = Command::from_str(&message) {
                             Event::ChatCommand(ChatCommand { user, command })
                         } else {
                             Event::ChatMessage(ChatMessage { user, message })
                         };
+
                         sender.send(Ok(twitch_event)).unwrap_or_default()
                     }
-                    _ => {}
+                    _ => {},
                 }
             }
+            log::warn!("Twitch IRC stream task finished!")
         });
 
-        client.join("TTVPlaysChess".to_owned()).unwrap();
         Ok(handle)
     }
 

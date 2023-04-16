@@ -137,7 +137,7 @@ impl Actor {
 
     pub async fn make_move(&self, game_id: &str, chess_move: chess::ChessMove) -> Result<bool> {
         log::info!("Making move {}", &game_id);
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         type Request = lichess_api::model::bot::r#move::PostRequest;
         let chess_move = chess_move.to_string();
@@ -173,6 +173,7 @@ impl Actor {
     }
 }
 
+#[derive(Debug)]
 pub enum Action {
     Account(AccountAction),
     Game { game_id: String, action: GameAction },
@@ -215,6 +216,7 @@ impl Action {
     }
 }
 
+#[derive(Debug)]
 pub enum AccountAction {
     AcceptChallenge { challenge_id: String },
     CancelChallenge { challenge_id: String },
@@ -222,6 +224,7 @@ pub enum AccountAction {
     ChallengeRandomBot,
 }
 
+#[derive(Debug)]
 pub enum GameAction {
     Abort,
     Move,

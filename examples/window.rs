@@ -38,7 +38,9 @@ impl Window {
     fn read_frame(&mut self) -> Option<Vec<u32>> {
         if let Err(error) = self.video_fifo.read_exact(&mut self.frame_buffer) {
             match error.kind() {
-                std::io::ErrorKind::UnexpectedEof => panic!("{}", error.to_string()),
+                std::io::ErrorKind::UnexpectedEof => {
+                    panic!("Error reading from video fifo: {}", error.to_string());
+                }
                 _ => return None,
             }
         }
@@ -53,8 +55,11 @@ impl Window {
 }
 
 fn main() {
-    let config = config::load_config().unwrap();
-    let mut window = Window::new("ChatPlaysChess", config.livestream.video.fifo.into());
+    let Ok(config) = config::load_config() else {
+        println!("Failed to load config!");
+        return;
+    };
 
+    let mut window = Window::new("ChatPlaysChess", config.livestream.video.fifo.into());
     window.run();
 }

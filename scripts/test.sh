@@ -6,7 +6,7 @@ set -e
 
 export LICHESS_AUTH="lip_DL8luOSdHTY5TilfCY7G"
 export LICHESS_ID="twitch-bot-blue"
-export TWITCH_ACCOUNT="TTVPlaysChess"
+export TWITCH_ACCOUNT="brongle"
 
 export RUST_LOG=info
 

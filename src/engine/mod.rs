@@ -103,14 +103,14 @@ impl Engine {
     pub async fn process(&mut self) -> Result<()> {
         // Check for errors as well and ensure we can recover from a broken or ended stream.
         if let Ok(Some(event)) = self.external_events.next_event() {
-            log::info!("Got external event");
+            log::info!("External event: {event:?}");
             self.process_external_event(event).await;
         } else {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
 
         while let Some(event) = self.internal_queue.next() {
-            log::info!("Got internal event");
+            log::info!("Internal event: {event:?}");
             self.process_internal_event(event).await;
         }
 
@@ -140,7 +140,7 @@ impl Engine {
             Action::FindNewGame => self.find_new_game().await,
             Action::Lichess(action) => self.process_lichess_action(action).await,
             Action::Twitch(action) => self.process_twitch_action(action).await,
-            Action::SwitchGame(game) => self.switch_game(game),
+            Action::SwitchGame(game) => self.game_manager.switch_game(&game),
             Action::Shutdown => {}
         }
     }
@@ -283,12 +283,6 @@ impl Engine {
                 .event_sender()
                 .send_action(LichessAction::challenge_random_bot().into());
         }
-    }
-
-    fn switch_game(&mut self, game_id: GameId) {
-        log::info!("Switching to game {}", &game_id);
-
-        self.game_manager.switch_game(&game_id);
     }
 
     async fn challenge_random_bot(&mut self) {

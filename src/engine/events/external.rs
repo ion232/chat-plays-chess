@@ -24,6 +24,7 @@ struct EventSource<E, M> {
     pub(crate) sender: Sender<Result<E>>,
 }
 
+#[derive(Debug)]
 pub enum Event {
     Lichess(LichessEvent),
     Twitch(TwitchEvent),
@@ -39,7 +40,7 @@ impl EventManager {
 
     pub async fn subscribe_to_all(&mut self) -> Result<()> {
         self.lichess.event_manager.stream_account(self.lichess.sender.clone()).await?;
-        // self.twitch.event_manager.stream_twitch_irc_events(self.twitch.sender.clone()).await?;
+        self.twitch.event_manager.stream_twitch_irc_events(self.twitch.sender.clone()).await?;
 
         Ok(())
     }
@@ -55,14 +56,14 @@ impl EventManager {
     pub fn next_event(&self) -> Result<Option<Event>> {
         // I think it's possible to refactor this with select!.
 
-        if !self.lichess.receiver.is_empty() {
-            if let Ok(event) = self.lichess.receiver.recv() {
+        if !self.twitch.receiver.is_empty() {
+            if let Ok(event) = self.twitch.receiver.recv() {
                 return Ok(Some(Event::from(event?)));
             }
         }
 
-        if !self.twitch.receiver.is_empty() {
-            if let Ok(event) = self.twitch.receiver.recv() {
+        if !self.lichess.receiver.is_empty() {
+            if let Ok(event) = self.lichess.receiver.recv() {
                 return Ok(Some(Event::from(event?)));
             }
         }

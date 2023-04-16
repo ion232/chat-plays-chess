@@ -37,6 +37,7 @@ pub struct ClockSettings {
     pub increment: u32,
 }
 
+#[derive(Debug)]
 pub struct Command {
     pub username: String,
     pub command: String,

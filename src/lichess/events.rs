@@ -7,6 +7,7 @@ use tokio::task::JoinHandle;
 use crate::error::Result;
 use crate::lichess::Context;
 
+#[derive(Debug)]
 pub enum Event {
     AccountEvent { event: bot::stream::events::Event },
     GameEvent { game_id: String, event: bot::stream::game::Event },

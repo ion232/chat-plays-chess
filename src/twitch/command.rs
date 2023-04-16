@@ -14,6 +14,7 @@ impl ToString for ChatCommand {
     }
 }
 
+#[derive(Debug)]
 pub enum Command {
     VoteGame { action: String },
     VoteSetting { setting: Setting, on: bool },
@@ -33,6 +34,7 @@ impl ToString for Command {
     }
 }
 
+#[derive(Debug)]
 pub enum Setting {
     GameMode(GameMode),
 }
@@ -47,6 +49,7 @@ impl ToString for Setting {
     }
 }
 
+#[derive(Debug)]
 pub enum GameMode {
     Blitz,
     Rapid,
@@ -76,7 +79,7 @@ impl FromStr for Command {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         lazy_static! {
             static ref COMMAND_REGEX: Regex =
-                Regex::new(r"!(game|blitz|rapid|classical)\s+(\w+)").unwrap();
+                Regex::new(r"!(game|bullet|rapid|classical)\s+(\w+)").unwrap();
         }
 
         if let Some(captures) = COMMAND_REGEX.captures(s) {
