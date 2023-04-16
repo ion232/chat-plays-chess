@@ -1,9 +1,31 @@
-use std::collections::HashMap;
 use std::time::Instant;
+use std::{collections::HashMap, time::Duration};
 
-use lichess_api::model::challenges::ChallengeJson;
+use lichess_api::model::{
+    challenges::{decline::Reason, ChallengeJson, Status},
+    Title, VariantKey,
+};
+use tokio::task::JoinHandle;
+
+use crate::engine::events::internal::Action;
+use crate::engine::events::internal::EventSender;
+use crate::engine::events::internal::Notification;
+use crate::lichess::action::Action as LichessAction;
 
 pub type ChallengeId = String;
+
+const MAX_OUTBOUND_CHALLENGE_WAIT_TIME: Duration = Duration::from_secs(20);
+
+pub struct ChallengeManager {
+    our_id: String,
+    outbound: Option<OutboundChallenge>,
+    event_sender: EventSender,
+}
+
+pub struct OutboundChallenge {
+    challenge: Challenge,
+    cancel_handle: JoinHandle<()>,
+}
 
 #[derive(Clone)]
 pub struct Challenge {
@@ -11,72 +33,87 @@ pub struct Challenge {
     pub timestamp: Instant,
 }
 
-impl Challenge {
-    pub fn new(challenge: ChallengeJson) -> Self {
-        Self { challenge, timestamp: std::time::Instant::now() }
-    }
-}
-
-#[derive(Default)]
-pub struct ChallengeManager {
-    inbound_rated: HashMap<ChallengeId, Challenge>,
-    outbound_challenge: Option<Challenge>,
-}
-
 impl ChallengeManager {
-    pub fn get_outbound(&self) -> Option<Challenge> {
-        self.outbound_challenge.clone().into()
+    pub fn new(our_id: String, event_sender: EventSender) -> Self {
+        Self { our_id, outbound: Default::default(), event_sender }
     }
 
-    pub fn set_outbound(&mut self, challenge: ChallengeJson) {
-        let challenge = Challenge::new(challenge);
-        if let Some(current_challenge) = &self.outbound_challenge {
-            let id = &challenge.challenge.base.id;
-            let current_id = &current_challenge.challenge.base.id;
-            log::warn!("Evicting existing outbound challenge {} for {}", current_id, id)
+    pub fn outbound(&self) -> &Option<OutboundChallenge> {
+        &self.outbound
+    }
+
+    pub fn process_challenge(&mut self, challenge: ChallengeJson) {
+        log::info!("Challenge event received: id: {}", challenge.base.id);
+
+        match challenge.base.status {
+            Status::Created => self.process_challenge_created(challenge),
+            Status::Offline => self.process_challenge_offline(challenge),
+            Status::Canceled => self.process_challenge_canceled(challenge),
+            Status::Declined => self.process_challenge_declined(challenge),
+            Status::Accepted => self.process_challenge_accepted(challenge),
         }
-        self.outbound_challenge = challenge.into();
     }
 
-    pub fn clear_outbound(&mut self) {
-        self.outbound_challenge = None;
-    }
+    fn process_challenge_created(&mut self, challenge: ChallengeJson) {
+        log::info!("Challenge {} created", &challenge.base.id);
 
-    pub fn add_inbound(&mut self, challenge: ChallengeJson) {
-        let id = challenge.base.id.clone();
-        let rated = challenge.base.rated;
+        let challenge_id = challenge.base.id.to_string();
+        let challenger = challenge.base.challenger.user.id.to_string();
 
-        let challenge = Challenge::new(challenge);
-        if rated {
-            self.inbound_rated.insert(id, challenge);
+        if challenger != self.our_id {
+            return;
         }
+
+        let mut event_sender = self.event_sender.clone();
+        let handle = tokio::task::spawn(async move {
+            tokio::time::sleep(MAX_OUTBOUND_CHALLENGE_WAIT_TIME).await;
+            let action = Action::Lichess(LichessAction::cancel_challenge(challenge_id));
+            event_sender.send_action(action);
+        });
+
+        self.outbound = OutboundChallenge::new(challenge, handle).into();
+    }
+
+    fn process_challenge_offline(&mut self, challenge: ChallengeJson) {
+        log::info!("Challenge opponent offline: {}", challenge.base.id);
+        self.nullify_challenge(challenge);
+    }
+
+    pub fn process_challenge_canceled(&mut self, challenge: ChallengeJson) {
+        log::info!("Challenge canceled: {}", challenge.base.id);
+        self.nullify_challenge(challenge);
+    }
+
+    pub fn process_challenge_declined(&mut self, challenge: ChallengeJson) {
+        log::info!("Challenge declined: {}", challenge.base.id);
+        self.nullify_challenge(challenge);
+    }
+
+    fn process_challenge_accepted(&mut self, challenge: ChallengeJson) {
+        log::info!("Challenge accepted: {}", challenge.base.id);
+        self.nullify_challenge(challenge);
     }
 
     pub fn nullify_challenge(&mut self, challenge: ChallengeJson) {
-        let id = challenge.base.id;
+        let Some(outbound) = &self.outbound else {
+            return;
+        };
 
-        self.inbound_rated.remove(&id);
-
-        if let Some(outbound) = &self.outbound_challenge {
-            if id == outbound.challenge.base.id {
-                self.outbound_challenge = None;
-            }
+        if challenge.base.id == outbound.challenge.challenge.base.id {
+            self.event_sender.send_notification(Notification::OutboundChallengeNullified);
+            outbound.cancel_handle.abort();
         }
     }
+}
 
-    pub fn remove_latest_inbound(&mut self) -> Option<ChallengeJson> {
-        fn min(map: &HashMap<ChallengeId, Challenge>) -> Option<ChallengeId> {
-            map.iter().min_by(|l, r| l.1.timestamp.cmp(&r.1.timestamp)).and_then(|(id, _)| id.to_owned().into())
-        }
-
-        if let Some(id) = min(&self.inbound_rated) {
-            self.inbound_rated.remove(&id).map(|c| c.challenge)
-        } else {
-            None
-        }
+impl OutboundChallenge {
+    pub fn new(challenge: ChallengeJson, cancel_handle: JoinHandle<()>) -> Self {
+        Self { challenge: Challenge::new(challenge), cancel_handle }
     }
+}
 
-    pub fn has_any_challenge(&self) -> bool {
-        self.inbound_rated.len() > 0 || self.outbound_challenge.is_some()
+impl Challenge {
+    pub fn new(challenge: ChallengeJson) -> Self {
+        Self { challenge, timestamp: std::time::Instant::now() }
     }
 }

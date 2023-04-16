@@ -15,15 +15,15 @@ impl ToString for ChatCommand {
 }
 
 pub enum Command {
-    VoteMove { chess_move: String },
+    VoteGame { action: String },
     VoteSetting { setting: Setting, on: bool },
 }
 
 impl ToString for Command {
     fn to_string(&self) -> String {
         match self {
-            Command::VoteMove { chess_move } => {
-                format!("Move: {}", &chess_move)
+            Command::VoteGame { action } => {
+                format!("Action: {}", &action)
             }
             Command::VoteSetting { setting, on } => {
                 let on = if *on { "on" } else { "off" };
@@ -75,7 +75,8 @@ impl FromStr for Command {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         lazy_static! {
-            static ref COMMAND_REGEX: Regex = Regex::new(r"!(move|blitz|rapid|classical)\s+(\w+)").unwrap();
+            static ref COMMAND_REGEX: Regex =
+                Regex::new(r"!(game|blitz|rapid|classical)\s+(\w+)").unwrap();
         }
 
         if let Some(captures) = COMMAND_REGEX.captures(s) {
@@ -91,10 +92,17 @@ impl FromStr for Command {
                 };
 
                 return match command {
-                    "move" => Ok(Command::VoteMove { chess_move: arg1 }),
-                    "blitz" => Ok(Command::VoteSetting { setting: Setting::GameMode(GameMode::Blitz), on }),
-                    "rapid" => Ok(Command::VoteSetting { setting: Setting::GameMode(GameMode::Rapid), on }),
-                    "classical" => Ok(Command::VoteSetting { setting: Setting::GameMode(GameMode::Classical), on }),
+                    "game" => Ok(Command::VoteGame { action: arg1 }),
+                    "blitz" => {
+                        Ok(Command::VoteSetting { setting: Setting::GameMode(GameMode::Blitz), on })
+                    }
+                    "rapid" => {
+                        Ok(Command::VoteSetting { setting: Setting::GameMode(GameMode::Rapid), on })
+                    }
+                    "classical" => Ok(Command::VoteSetting {
+                        setting: Setting::GameMode(GameMode::Classical),
+                        on,
+                    }),
                     _ => Err(Error::ParseError),
                 };
             }

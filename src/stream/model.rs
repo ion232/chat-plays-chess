@@ -2,12 +2,22 @@ use std::collections::HashMap;
 
 use lichess_api::model::Speed;
 
-use crate::engine::users::SettingsMetrics;
-use crate::engine::{GameModes, Settings};
+use crate::{
+    engine::votes::settings::{GameModes, Settings},
+    lichess::game::Game,
+};
 
-pub struct ClockSettings {
-    pub limit: u32,
-    pub increment: u32,
+pub struct Model {
+    pub title: Title,
+    pub notice: Notice,
+    pub chat_commands: Vec<Command>,
+    pub move_history: Vec<String>,
+    pub us: Player,
+    pub opponent: Player,
+    pub board: chess::Board,
+    pub settings: Settings,
+    pub game_votes: GameVotes,
+    pub state: State,
 }
 
 pub struct Title {
@@ -16,9 +26,203 @@ pub struct Title {
     pub clock_settings: Option<ClockSettings>,
 }
 
+#[derive(Clone)]
+pub struct Notice {
+    pub lines: Vec<String>,
+}
+
+#[derive(Clone)]
+pub struct ClockSettings {
+    pub limit: u32,
+    pub increment: u32,
+}
+
+pub struct Command {
+    pub username: String,
+    pub command: String,
+}
+
+#[derive(Clone)]
+pub struct Player {
+    pub name: String,
+    pub color: chess::Color,
+    pub rating: Option<u32>,
+    pub timer: Timer,
+}
+
+#[derive(Copy, Clone)]
+pub struct Timer {
+    pub minutes: u64,
+    pub seconds: u64,
+}
+
+#[derive(Clone, Default)]
+pub struct GameVotes {
+    pub votes: HashMap<String, VoteStats>,
+    pub delays: Delays,
+}
+
+#[derive(Clone, Copy)]
+pub struct VoteStats {
+    pub vote_changes: i32,
+    pub total_votes: u32,
+}
+
+#[derive(Clone, Default)]
+pub struct Delays {
+    pub current: u8,
+    pub max: u8,
+}
+
+pub enum State {
+    FindingNewOpponent,
+    OurTurn,
+    OpponentsTurn,
+    GameFinished,
+    WaitingForChallengeReply { remaining: u64 },
+    Unknown,
+}
+
+#[derive(Clone)]
+pub enum Side {
+    Ours,
+    Theirs,
+}
+
+impl Model {
+    pub fn update_from_game(&mut self, game: Game) {
+        self.title.speed = game.speed.into();
+        self.title.clock_settings = game.clock_settings;
+
+        self.board = game.board;
+        self.move_history = game.move_history.clone();
+        self.opponent = game.opponent.clone();
+        self.us = game.us.clone();
+    }
+}
+
+impl Default for Model {
+    fn default() -> Self {
+        let title = Title::new();
+        let notice = Default::default();
+        let chat_commands = Default::default();
+        let move_history = Default::default();
+        let user = Player {
+            name: "Twitch".to_string(),
+            color: chess::Color::White,
+            rating: None,
+            timer: Timer { minutes: 0, seconds: 0 },
+        };
+        let opponent = Player {
+            name: "Unknown".to_string(),
+            color: chess::Color::Black,
+            rating: None,
+            timer: Timer { minutes: 0, seconds: 0 },
+        };
+        let board = chess::Board::default();
+        let settings = Settings {
+            game_modes: GameModes::default(),
+            bullet: 0,
+            rapid: 0,
+            classical: 0,
+            total: 0,
+        };
+        let game_votes =
+            GameVotes { votes: Default::default(), delays: Delays { current: 0, max: 6 } };
+        let state = State::Unknown;
+
+        Self {
+            title,
+            notice,
+            chat_commands,
+            move_history,
+            us: user,
+            opponent,
+            board,
+            settings,
+            game_votes,
+            state,
+        }
+    }
+}
+
 impl Title {
     pub fn new() -> Self {
         Self { url: "lichess.org/@/TTVPlaysChess", speed: None, clock_settings: None }
+    }
+}
+
+impl Default for Notice {
+    fn default() -> Self {
+        let lines = vec![
+            "Welcome to TTVPlaysChess!".to_string(),
+            "".to_string(),
+            "Read the channel description".to_string(),
+            "for details about this".to_string(),
+            "stream and how to participate.".to_string(),
+        ];
+        Self { lines }
+    }
+}
+
+impl Command {
+    pub fn new(username: String, command: String) -> Self {
+        Command { username, command }
+    }
+}
+
+impl Timer {
+    pub fn new(milliseconds: u64) -> Self {
+        Self { minutes: milliseconds / (60 * 1000), seconds: (milliseconds % (60 * 1000)) / 1000 }
+    }
+
+    pub fn elapse(&mut self, milliseconds: u64) {
+        let total = self.as_millis();
+        let timer =
+            if milliseconds < total { Self::new(total - milliseconds) } else { Self::new(0) };
+
+        *self = timer;
+    }
+
+    fn as_millis(&self) -> u64 {
+        (self.minutes * 60 * 1000) + (self.seconds * 1000)
+    }
+}
+
+impl GameVotes {
+    pub fn lines(&self) -> Vec<String> {
+        // Not the most efficient, but the max legal chess moves appears to be 218.
+        let mut lines: Vec<(String, VoteStats)> = self.votes.clone().into_iter().collect();
+        lines.sort_by(|l, r| r.1.total_votes.cmp(&l.1.total_votes));
+        let mut lines: Vec<String> = lines
+            .into_iter()
+            .map(|(chess_move, vote_stats)| format!("{}: {}", chess_move, vote_stats.to_string()))
+            .collect();
+        lines.insert(0, self.delays.to_string());
+        lines.insert(1, "".to_string());
+
+        lines
+    }
+}
+
+impl VoteStats {
+    pub fn update_changes(old: &VoteStats, new: &mut VoteStats) {
+        new.vote_changes = new.total_votes as i32 - old.total_votes as i32;
+    }
+}
+
+impl Delays {
+    pub fn new(max: u8) -> Self {
+        Self { current: 0, max }
+    }
+
+    pub fn add_delay(&mut self) {
+        self.current += 1;
+        self.current = std::cmp::min(self.current, self.max);
+    }
+
+    pub fn can_delay(&self) -> bool {
+        self.current >= self.max
     }
 }
 
@@ -46,43 +250,16 @@ impl ToString for Title {
     }
 }
 
-pub struct Command {
-    pub username: String,
-    pub command: String,
-}
-
-impl Command {
-    pub fn new(username: String, command: String) -> Self {
-        Command { username, command }
-    }
-}
-
 impl ToString for Command {
     fn to_string(&self) -> String {
         format!("{}: {}", self.username, self.command)
     }
 }
 
-#[derive(Copy, Clone)]
-pub struct Timer {
-    pub minutes: u64,
-    pub seconds: u64,
-}
-
-impl Timer {
-    pub fn new(milliseconds: u64) -> Self {
-        Self { minutes: milliseconds / (60 * 1000), seconds: (milliseconds % (60 * 1000)) / 1000 }
-    }
-
-    pub fn elapse(&mut self, milliseconds: u64) {
-        let total = self.as_millis();
-        let timer = if milliseconds < total { Self::new(total - milliseconds) } else { Self::new(0) };
-
-        *self = timer;
-    }
-
-    fn as_millis(&self) -> u64 {
-        (self.minutes * 60 * 1000) + (self.seconds * 1000)
+impl ToString for Player {
+    fn to_string(&self) -> String {
+        let rating = self.rating.map(|r| r.to_string()).unwrap_or("????".to_string());
+        format!("{} {} {}", self.name, rating, self.timer.to_string())
     }
 }
 
@@ -97,82 +274,10 @@ impl ToString for Timer {
     }
 }
 
-#[derive(Clone)]
-pub struct Player {
-    pub name: String,
-    pub color: chess::Color,
-    pub rating: Option<u32>,
-    pub timer: Timer,
-}
-
-impl ToString for Player {
-    fn to_string(&self) -> String {
-        let rating = self.rating.map(|r| r.to_string()).unwrap_or("????".to_string());
-        format!("{} {} {}", self.name, rating, self.timer.to_string())
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct VoteStats {
-    pub vote_changes: i32,
-    pub total_votes: u32,
-}
-
-impl VoteStats {
-    pub fn update_changes(old: &VoteStats, new: &mut VoteStats) {
-        new.vote_changes = new.total_votes as i32 - old.total_votes as i32;
-    }
-}
-
 impl ToString for VoteStats {
     fn to_string(&self) -> String {
         let op = if self.vote_changes.is_positive() { "+" } else { "" };
         format!("{} ({}{})", self.total_votes, op, self.vote_changes)
-    }
-}
-
-pub type MoveString = String;
-
-#[derive(Clone, Default)]
-pub struct GameVotes {
-    pub votes: HashMap<MoveString, VoteStats>,
-    pub delays: Delays,
-}
-
-impl GameVotes {
-    pub fn lines(&self) -> Vec<String> {
-        // Not the most efficient, but the max legal chess moves appears to be 218.
-        let mut lines: Vec<(String, VoteStats)> = self.votes.clone().into_iter().collect();
-        lines.sort_by(|l, r| r.1.total_votes.cmp(&l.1.total_votes));
-        let mut lines: Vec<String> = lines
-            .into_iter()
-            .map(|(chess_move, vote_stats)| format!("{}: {}", chess_move, vote_stats.to_string()))
-            .collect();
-        lines.insert(0, self.delays.to_string());
-        lines.insert(1, "".to_string());
-
-        lines
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct Delays {
-    pub current: u8,
-    pub max: u8,
-}
-
-impl Delays {
-    pub fn new(max: u8) -> Self {
-        Self { current: 0, max }
-    }
-
-    pub fn add_delay(&mut self) {
-        self.current += 1;
-        self.current = std::cmp::min(self.current, self.max);
-    }
-
-    pub fn can_delay(&self) -> bool {
-        self.current >= self.max
     }
 }
 
@@ -188,15 +293,6 @@ impl ToString for Delays {
     }
 }
 
-pub enum State {
-    FindingNewOpponent,
-    OurTurn,
-    OpponentsTurn,
-    GameFinished,
-    WaitingForChallengeReply { remaining: u64 },
-    Unknown,
-}
-
 impl ToString for State {
     fn to_string(&self) -> String {
         match self {
@@ -208,66 +304,6 @@ impl ToString for State {
                 format!("Sent challenge - waiting {}s for response...", remaining).to_string()
             }
             State::Unknown => "Unknown".to_string(),
-        }
-    }
-}
-
-pub struct Model {
-    pub title: Title,
-    pub notice: Vec<String>,
-    pub chat_commands: Vec<Command>,
-    pub move_history: Vec<String>,
-    pub us: Player,
-    pub opponent: Player,
-    pub board: chess::Board,
-    pub metrics: SettingsMetrics,
-    pub settings: Settings,
-    pub game_votes: GameVotes,
-    pub state: State,
-}
-
-impl Default for Model {
-    fn default() -> Self {
-        let title = Title::new();
-        let notice = vec![
-            "Welcome to TTVPlaysChess!".to_string(),
-            "".to_string(),
-            "Read the channel description".to_string(),
-            "for details about this".to_string(),
-            "stream and how to participate.".to_string(),
-        ];
-        let chat_commands = vec![];
-        let move_history = vec![];
-        let user = Player {
-            name: "Twitch".to_string(),
-            color: chess::Color::White,
-            rating: None,
-            timer: Timer { minutes: 0, seconds: 0 },
-        };
-        let opponent = Player {
-            name: "Unknown".to_string(),
-            color: chess::Color::Black,
-            rating: None,
-            timer: Timer { minutes: 0, seconds: 0 },
-        };
-        let board = chess::Board::default();
-        let settings = Settings { game_modes: GameModes::default(), blitz: 0, rapid: 0, classical: 0, total: 0 };
-        let game_votes = GameVotes { votes: HashMap::from([]), delays: Delays { current: 0, max: 6 } };
-        let state = State::Unknown;
-        let metrics = SettingsMetrics::default();
-
-        Self {
-            title,
-            notice,
-            chat_commands,
-            move_history,
-            us: user,
-            opponent,
-            board,
-            metrics,
-            settings,
-            game_votes,
-            state,
         }
     }
 }

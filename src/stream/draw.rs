@@ -1,21 +1,22 @@
 /// This file is full of hardcoded fudge-factors, but it serves it's purpose.
 /// It would be reasonably simple to abstract this into something cleaner, but would take more time.
-use crate::engine::Settings;
-
 use fontdue::layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle, VerticalAlign};
 use raqote::{
-    Color, DrawOptions, DrawTarget, Gradient, GradientStop, Image, LineCap, LineJoin, PathBuilder, Point, SolidSource,
-    Source, Spread, StrokeStyle,
+    Color, DrawOptions, DrawTarget, Gradient, GradientStop, Image, LineCap, LineJoin, PathBuilder,
+    Point, SolidSource, Source, Spread, StrokeStyle,
 };
 
 use fontdue::Font;
 
+use crate::engine::votes::settings::Settings;
+
 use super::font::Fonts;
 use super::image::Images;
-use super::model::{Command, GameVotes, Model, Player, State, Title};
+use super::model::{Command, GameVotes, Model, Notice, Player, State, Title};
 
 pub const FRAME_DIMS_U32: (u32, u32) = (1920, 1080);
 pub const FRAME_DIMS_F32: (f32, f32) = (1920.0, 1080.0);
+pub const FRAME_PIXEL_COUNT: usize = FRAME_DIMS_U32.0 as usize * FRAME_DIMS_U32.1 as usize;
 
 // Left column.
 
@@ -25,7 +26,8 @@ const NOTICE_DIMS: (f32, f32) = (620.0, 200.0);
 const CURRENT_STATE_ORIGIN: (f32, f32) = (NOTICE_ORIGIN.0, NOTICE_ORIGIN.1 + NOTICE_DIMS.1);
 const CURRENT_STATE_DIMS: (f32, f32) = (NOTICE_DIMS.0, 100.0);
 
-const SETTINGS_ORIGIN: (f32, f32) = (NOTICE_ORIGIN.0, CURRENT_STATE_ORIGIN.1 + CURRENT_STATE_DIMS.1);
+const SETTINGS_ORIGIN: (f32, f32) =
+    (NOTICE_ORIGIN.0, CURRENT_STATE_ORIGIN.1 + CURRENT_STATE_DIMS.1);
 const SETTINGS_DIMS: (f32, f32) = (NOTICE_DIMS.0, 240.0);
 
 const MOVE_HISTORY_ORIGIN: (f32, f32) = (NOTICE_ORIGIN.0, SETTINGS_ORIGIN.1 + SETTINGS_DIMS.1);
@@ -50,10 +52,10 @@ const _USER_DIMS: (f32, f32) = PLAYER_DIMS;
 
 // Right column.
 
-const game_votes_ORIGIN: (f32, f32) = (TITLE_ORIGIN.0 + TITLE_DIMS.0, 0.0);
-const game_votes_DIMS: (f32, f32) = (620.0, FRAME_DIMS_F32.1 / 2.0);
+const GAME_VOTES_ORIGIN: (f32, f32) = (TITLE_ORIGIN.0 + TITLE_DIMS.0, 0.0);
+const GAME_VOTES_DIMS: (f32, f32) = (620.0, FRAME_DIMS_F32.1 / 2.0);
 
-const COMMANDS_ORIGIN: (f32, f32) = (game_votes_ORIGIN.0, game_votes_ORIGIN.1 + game_votes_DIMS.1);
+const COMMANDS_ORIGIN: (f32, f32) = (GAME_VOTES_ORIGIN.0, GAME_VOTES_ORIGIN.1 + GAME_VOTES_DIMS.1);
 const COMMANDS_DIMS: (f32, f32) = (1200.0, FRAME_DIMS_F32.1 / 2.0);
 
 // Draw properties.
@@ -68,7 +70,6 @@ pub struct Context {
 
 struct Sources {
     box_border: SolidSource,
-    box_fill: SolidSource,
     black: SolidSource,
     white: SolidSource,
 }
@@ -92,7 +93,6 @@ impl Context {
             target: DrawTarget::new(width, height),
             sources: Sources {
                 box_border: SolidSource::from_unpremultiplied_argb(0xff, 0, 0, 0),
-                box_fill: SolidSource::from_unpremultiplied_argb(0xff, 0xff, 0xff, 0xff),
                 black: SolidSource::from_unpremultiplied_argb(0xff, 0, 0, 0),
                 white: SolidSource::from_unpremultiplied_argb(0xff, 0xff, 0xff, 0xff),
             },
@@ -100,7 +100,7 @@ impl Context {
         }
     }
 
-    pub fn make_png_data(&mut self, model: &Model, images: Images, fonts: Fonts) -> Vec<u8> {
+    pub fn make_png_data(&mut self, model: &Model, images: &Images, fonts: &Fonts) -> Vec<u8> {
         self.clear();
         self.draw_elements(&model, &images, &fonts);
         self.as_png_data()
@@ -154,12 +154,12 @@ impl Context {
         png_data
     }
 
-    fn draw_notice(&mut self, notice: &Vec<String>, fonts: &Fonts) {
+    fn draw_notice(&mut self, notice: &Notice, fonts: &Fonts) {
         let (x, y) = NOTICE_ORIGIN;
         let (width, height) = NOTICE_DIMS;
 
         self.draw_box(x, y, width, height);
-        self.draw_lines(x + 24.0, y + 24.0, &fonts.retro, 32.0, notice)
+        self.draw_lines(x + 24.0, y + 24.0, &fonts.retro, 32.0, &notice.lines)
     }
 
     fn draw_current_state(&mut self, state: &State, fonts: &Fonts) {
@@ -210,7 +210,8 @@ impl Context {
     }
 
     fn draw_chess_pieces(&mut self, us: &Player, board: &chess::Board, images: &Images) {
-        let (file_offset, rank_offset) = if chess::Color::Black == us.color { (7, 0) } else { (0, 7) };
+        let (file_offset, rank_offset) =
+            if chess::Color::Black == us.color { (7, 0) } else { (0, 7) };
 
         for square in chess::ALL_SQUARES {
             let file = (file_offset - square.get_file().to_index() as i32).abs();
@@ -262,8 +263,8 @@ impl Context {
     }
 
     fn draw_game_votes(&mut self, game_votes: &GameVotes, fonts: &Fonts) {
-        let (x, y) = game_votes_ORIGIN;
-        let (width, height) = game_votes_DIMS;
+        let (x, y) = GAME_VOTES_ORIGIN;
+        let (width, height) = GAME_VOTES_DIMS;
         let lines = game_votes.lines();
         self.draw_box(x, y, width, height);
         self.draw_lines(x + 12.0, y + 12.0, &fonts.retro, 42.0, &lines);
@@ -353,13 +354,22 @@ impl Context {
                     self.sources.black.g,
                     self.sources.black.b,
                 );
-                buffer[i] =
-                    (u32::from(src.a) << 24) | (u32::from(src.r) << 16) | (u32::from(src.g) << 8) | u32::from(src.b);
+                buffer[i] = (u32::from(src.a) << 24)
+                    | (u32::from(src.r) << 16)
+                    | (u32::from(src.g) << 8)
+                    | u32::from(src.b);
             }
 
             let image = raqote::Image { width, height, data: &buffer[..] };
 
-            self.target.draw_image_with_size_at(g.width as f32, g.height as f32, g.x, g.y, &image, &options);
+            self.target.draw_image_with_size_at(
+                g.width as f32,
+                g.height as f32,
+                g.x,
+                g.y,
+                &image,
+                &options,
+            );
         }
     }
 }

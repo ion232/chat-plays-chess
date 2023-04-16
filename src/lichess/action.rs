@@ -25,7 +25,11 @@ impl Actor {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         type Request = lichess_api::model::account::profile::GetRequest;
-        self.context.api.get_profile(Request::new()).await.map_err(|e| crate::error::Error::LichessError(e))
+        self.context
+            .api
+            .get_profile(Request::new())
+            .await
+            .map_err(|e| crate::error::Error::LichessError(e))
     }
 
     pub async fn get_online_bots(&self) -> Result<Vec<User>> {
@@ -51,7 +55,12 @@ impl Actor {
         Ok(bots)
     }
 
-    pub async fn create_challenge(&self, username: String, limit: u32, increment: u32) -> Result<ChallengeCreated> {
+    pub async fn create_challenge(
+        &self,
+        username: String,
+        limit: u32,
+        increment: u32,
+    ) -> Result<ChallengeCreated> {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let base = ChallengeBase {
@@ -79,6 +88,7 @@ impl Actor {
     }
 
     pub async fn accept_challenge(&self, challenge_id: String) -> Result<bool> {
+        log::info!("Accepting challenge: id {}", &challenge_id);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         type Request = lichess_api::model::challenges::accept::PostRequest;
@@ -90,6 +100,7 @@ impl Actor {
     }
 
     pub async fn cancel_challenge(&self, challenge_id: String) -> Result<bool> {
+        log::info!("Canceling challenge: id {}", &challenge_id);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         type Request = lichess_api::model::challenges::cancel::PostRequest;
@@ -101,7 +112,9 @@ impl Actor {
     }
 
     pub async fn decline_challenge(&self, challenge_id: String, reason: Reason) -> Result<bool> {
+        log::info!("Declining challenge: id {}", &challenge_id);
         tokio::time::sleep(Duration::from_millis(100)).await;
+
         type Request = lichess_api::model::challenges::decline::PostRequest;
         self.context
             .api
@@ -111,13 +124,21 @@ impl Actor {
     }
 
     pub async fn abort(&self, game_id: &str) -> Result<bool> {
+        log::info!("Aborting game {}", &game_id);
         tokio::time::sleep(Duration::from_millis(100)).await;
+
         type Request = lichess_api::model::bot::abort::PostRequest;
-        self.context.api.bot_abort_game(Request::new(&game_id)).await.map_err(|e| crate::error::Error::LichessError(e))
+        self.context
+            .api
+            .bot_abort_game(Request::new(&game_id))
+            .await
+            .map_err(|e| crate::error::Error::LichessError(e))
     }
 
     pub async fn make_move(&self, game_id: &str, chess_move: chess::ChessMove) -> Result<bool> {
+        log::info!("Making move {}", &game_id);
         tokio::time::sleep(Duration::from_millis(200)).await;
+
         type Request = lichess_api::model::bot::r#move::PostRequest;
         let chess_move = chess_move.to_string();
         self.context
@@ -128,7 +149,9 @@ impl Actor {
     }
 
     pub async fn offer_draw(&self, game_id: &str) -> Result<bool> {
+        log::info!("Offering to draw game {}", &game_id);
         tokio::time::sleep(Duration::from_millis(100)).await;
+
         type Request = lichess_api::model::bot::draw::PostRequest;
         self.context
             .api
@@ -138,9 +161,15 @@ impl Actor {
     }
 
     pub async fn resign(&self, game_id: &str) -> Result<bool> {
+        log::info!("Resigning game {}", &game_id);
         tokio::time::sleep(Duration::from_millis(100)).await;
+
         type Request = lichess_api::model::bot::resign::PostRequest;
-        self.context.api.bot_resign_game(Request::new(&game_id)).await.map_err(|e| crate::error::Error::LichessError(e))
+        self.context
+            .api
+            .bot_resign_game(Request::new(&game_id))
+            .await
+            .map_err(|e| crate::error::Error::LichessError(e))
     }
 }
 

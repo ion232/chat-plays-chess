@@ -29,9 +29,12 @@ impl ImageCache {
         self.load_all_images();
     }
 
-    pub fn get_images(&mut self) -> Images {
+    pub fn images(&mut self) -> Images {
         Images {
-            board: Board { dark: self.get_image("background/dark"), light: self.get_image("background/light") },
+            board: Board {
+                dark: self.get_image("background/dark"),
+                light: self.get_image("background/light"),
+            },
             black_pieces: Pieces {
                 king: self.get_image("pieces/black_king"),
                 queen: self.get_image("pieces/black_queen"),

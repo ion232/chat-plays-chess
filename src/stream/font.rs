@@ -17,7 +17,7 @@ impl FontCache {
         self.load_all_fonts();
     }
 
-    pub fn get_fonts(&self) -> Fonts {
+    pub fn fonts(&self) -> Fonts {
         Fonts { gb: self.get_font("PokemonGB"), retro: self.get_font("VCR_OSD_MONO") }
     }
 

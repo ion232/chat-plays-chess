@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
-use tokio::io::{split, AsyncBufReadExt, BufReader};
+use crossbeam_channel::Sender;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::task::JoinHandle;
 
 use twitch_irc::login::StaticLoginCredentials;
@@ -10,11 +11,16 @@ use twitch_irc::{ClientConfig, SecureTCPTransport};
 
 use crate::error::Result;
 use crate::twitch::command::Command;
+use crate::twitch::Context;
+
+pub struct EventManager {
+    pub(crate) context: Context,
+    twitch_irc_handle: Option<JoinHandle<()>>,
+}
 
 pub enum Event {
     ChatCommand(ChatCommand),
     ChatMessage(ChatMessage),
-    BitsDonation(BitsDonation),
 }
 
 pub struct ChatCommand {
@@ -27,30 +33,39 @@ pub struct ChatMessage {
     pub message: String,
 }
 
-pub struct BitsDonation {
-    pub bits: u64,
-    pub message: String,
-}
-
-impl crate::engine::events::EventSubscriber {
-    pub async fn stream_twitch_irc_events(&self) -> Result<JoinHandle<()>> {
-        self.stream_artifical_twitch_events().await
+impl EventManager {
+    pub fn new(context: Context) -> Self {
+        Self { context, twitch_irc_handle: Default::default() }
     }
 
-    async fn stream_artifical_twitch_events(&self) -> Result<JoinHandle<()>> {
-        let sender = self.sender.clone();
+    pub async fn stream_twitch_irc_events(
+        &self,
+        sender: Sender<Result<Event>>,
+    ) -> Result<JoinHandle<()>> {
+        self.stream_artifical_twitch_events(sender).await
+    }
+
+    async fn stream_artifical_twitch_events(
+        &self,
+        sender: Sender<Result<Event>>,
+    ) -> Result<JoinHandle<()>> {
+        let sender = sender.clone();
         let handle = tokio::spawn(async move {
             let stdin = tokio::io::stdin();
             let mut reader = BufReader::new(stdin);
             let mut line = "".to_string();
+
             while let Ok(_) = reader.read_line(&mut line).await {
                 let (user, message) = line.split_once(":").unwrap();
                 let twitch_event = if let Ok(command) = Command::from_str(&message) {
                     Event::ChatCommand(ChatCommand { user: user.to_string(), command })
                 } else {
-                    Event::ChatMessage(ChatMessage { user: user.to_string(), message: message.to_string() })
+                    Event::ChatMessage(ChatMessage {
+                        user: user.to_string(),
+                        message: message.to_string(),
+                    })
                 };
-                let twitch_event = crate::engine::events::Event::TwitchEvent(twitch_event);
+                // let twitch_event = crate::engine::events::Event::TwitchEvent(twitch_event);
                 sender.send(Ok(twitch_event)).unwrap_or_default()
             }
         });
@@ -58,11 +73,14 @@ impl crate::engine::events::EventSubscriber {
         Ok(handle)
     }
 
-    async fn stream_real_twitch_events(&self) -> Result<JoinHandle<()>> {
+    async fn stream_real_twitch_events(
+        &self,
+        sender: Sender<Result<Event>>,
+    ) -> Result<JoinHandle<()>> {
         let config = ClientConfig::default();
         let (mut incoming_messages, client) =
             TwitchIRCClient::<SecureTCPTransport, StaticLoginCredentials>::new(config);
-        let sender = self.sender.clone();
+        let sender = sender.clone();
 
         let handle = tokio::spawn(async move {
             while let Some(message) = incoming_messages.recv().await {
@@ -75,7 +93,6 @@ impl crate::engine::events::EventSubscriber {
                         } else {
                             Event::ChatMessage(ChatMessage { user, message })
                         };
-                        let twitch_event = crate::engine::events::Event::TwitchEvent(twitch_event);
                         sender.send(Ok(twitch_event)).unwrap_or_default()
                     }
                     _ => {}
@@ -85,5 +102,11 @@ impl crate::engine::events::EventSubscriber {
 
         client.join("TTVPlaysChess".to_owned()).unwrap();
         Ok(handle)
+    }
+
+    pub async fn shutdown(self) {
+        if let Some(handle) = self.twitch_irc_handle {
+            _ = handle.await;
+        }
     }
 }

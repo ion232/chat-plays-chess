@@ -1,11 +1,10 @@
-pub mod action;
 pub mod events;
-pub mod moves;
-pub mod users;
+pub mod votes;
 
 use std::time::Duration;
 
 use lichess_api::model::users::User;
+use lichess_api::model::Speed;
 
 use rand::rngs::ThreadRng;
 use rand::seq::IteratorRandom;
@@ -13,22 +12,23 @@ use rand::seq::SliceRandom;
 
 use crate::error::Result;
 
-use crate::engine::users::ActiveUsers;
-
-use crate::engine::events::Event;
-use crate::engine::events::EventSubscriber;
+use crate::engine::events::external;
+use crate::engine::events::internal;
+use crate::engine::events::stream;
 
 use crate::lichess::action::AccountAction;
 use crate::lichess::action::Action as LichessAction;
+use crate::lichess::action::Actor as LichessActor;
 use crate::lichess::action::GameAction;
+use crate::lichess::challenge::ChallengeManager;
 use crate::lichess::events::Event as LichessEvent;
-use crate::lichess::game::Game;
-use crate::lichess::manager::LichessManager;
+use crate::lichess::game::GameId;
+use crate::lichess::game::GameManager;
 use crate::lichess::Context as LichessContext;
 
 use crate::stream::model::Command;
-use crate::stream::model::Model;
 
+use crate::stream::model::State;
 use crate::twitch::action::Action as TwitchAction;
 use crate::twitch::command::Command as TwitchCommand;
 use crate::twitch::command::Setting;
@@ -36,111 +36,200 @@ use crate::twitch::events::ChatCommand;
 use crate::twitch::events::Event as TwitchEvent;
 use crate::twitch::Context as TwitchContext;
 
-use self::action::Action;
-use self::action::ActionReceiver;
-use self::action::ActionSender;
-use self::moves::Vote;
+use self::events::internal::Action;
+use self::events::internal::GameNotification;
+use self::events::internal::Notification;
 
 pub struct Engine {
-    pub(crate) active_users: ActiveUsers,
-    pub model: Model,
-    pub(crate) event_subscriber: EventSubscriber,
-    pub(crate) action_receiver: ActionReceiver,
-    pub(crate) lichess_manager: LichessManager,
-    pub(crate) rng: ThreadRng,
+    game_votes: self::votes::game::VoteTracker,
+    settings_votes: self::votes::settings::VoteTracker,
+    external_events: external::EventManager,
+    internal_queue: internal::EventQueue,
+    stream_events: stream::EventSender,
+    challenge_manager: ChallengeManager,
+    game_manager: GameManager,
+    lichess_actor: LichessActor,
+    is_running: bool,
+    rng: ThreadRng,
 }
 
 impl Engine {
-    pub fn new(lichess_context: LichessContext, twitch_context: TwitchContext) -> Self {
-        let (sender, receiver) = crossbeam_channel::unbounded();
-        let action_receiver = ActionReceiver::new(receiver);
-        let action_sender = ActionSender::new(sender);
+    pub fn new(
+        stream_events: stream::EventSender,
+        lichess_context: LichessContext,
+        twitch_context: TwitchContext,
+    ) -> Self {
+        let our_id = lichess_context.our_id.to_string();
+        let internal_queue = internal::EventQueue::default();
+        internal_queue.event_sender().send_action(Action::FindNewGame);
 
         Engine {
-            active_users: ActiveUsers::new(),
-            model: Default::default(),
-            event_subscriber: EventSubscriber::new(lichess_context.clone(), twitch_context),
-            action_receiver,
-            lichess_manager: LichessManager::new(lichess_context, action_sender),
+            game_votes: self::votes::game::VoteTracker::new(
+                &Speed::Blitz,
+                internal_queue.event_sender(),
+            ),
+            settings_votes: Default::default(),
+            external_events: external::EventManager::new(lichess_context.clone(), twitch_context),
+            stream_events,
+            challenge_manager: ChallengeManager::new(
+                our_id.to_string(),
+                internal_queue.event_sender(),
+            ),
+            game_manager: GameManager::new(our_id, internal_queue.event_sender()),
+            internal_queue,
+            lichess_actor: LichessActor::new(lichess_context),
+            is_running: true,
             rng: rand::thread_rng(),
         }
     }
 
     pub async fn setup(&mut self) -> Result<()> {
-        self.event_subscriber.subscribe_to_all().await?;
+        self.external_events.subscribe_to_all().await?;
 
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // Wait a short amount of time for events to arrive.
+        tokio::time::sleep(Duration::from_secs(3)).await;
 
-        // while self.event_subscriber.has_event() {
-        //     type LichessAccountEvent = lichess_api::model::board::stream::events::Event;
+        Ok(())
+    }
 
-        //     match self.event_subscriber.next_event().await? {
-        //         Event::LichessEvent(event) => match event {
-        //             LichessEvent::AccountEvent { event } => match event {
-        //                 LichessAccountEvent::Challenge { challenge } => {
-        //                     let challenge_id = challenge.base.id.to_string();
-        //                     let reason = Reason::Generic;
-        //                     if challenge_id == self.lichess_manager.actor.context.bot_id {
-        //                         if let Err(error) = self.lichess_manager.actor.cancel_challenge(challenge_id).await {
-        //                             log::error!("Cancel challenge error for {}: {}", challenge.base.id, error)
-        //                         } else {
-        //                             log::info!("Successfully cancelled challenge {}", challenge.base.id);
-        //                         }
-        //                     } else {
-        //                         if let Err(error) = self.lichess_manager.actor.decline_challenge(challenge_id, reason).await {
-        //                             log::error!("Decline challenge error for {}: {}", challenge.base.id, error)
-        //                         } else {
-        //                             log::info!("Successfully declined challenge {}", challenge.base.id);
-        //                         }
-        //                     }
-        //                 }
-        //                 LichessAccountEvent::GameStart { game } => {
-        //                     let game_id = game.game_id;
-        //                     if let Err(error) = self.lichess_manager.actor.abort(&game_id).await {
-        //                         log::warn!("Abort error for {}: {}", game_id, error);
-        //                         log::info!("Trying resign instead...");
-        //                         if let Err(error) = self.lichess_manager.actor.resign(&game_id).await {
-        //                             log::error!("Resign error for {}: {}", game_id, error);
-        //                         } else {
-        //                             log::info!("Successfully resigned.");
-        //                         }
-        //                     }
-        //                 }
-        //                 _ => {}
-        //             },
-        //             _ => {}
-        //         },
-        //         Event::TwitchEvent(_) => {}
-        //     }
-        // }
+    pub async fn run(&mut self) -> Result<()> {
+        while self.is_running {
+            self.process().await?;
+        }
 
         Ok(())
     }
 
     pub async fn process(&mut self) -> Result<()> {
-        tokio::time::sleep(Duration::from_millis(1)).await;
-
-        if self.event_subscriber.has_event() {
-            let event = self.event_subscriber.next_event().await?;
-            self.process_event(event).await;
+        // Check for errors as well and ensure we can recover from a broken or ended stream.
+        if let Ok(Some(event)) = self.external_events.next_event() {
+            log::info!("Got external event");
+            self.process_external_event(event).await;
+        } else {
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        self.process_action_queue().await;
 
-        self.manage_state();
-        self.process_action_queue().await;
+        while let Some(event) = self.internal_queue.next() {
+            log::info!("Got internal event");
+            self.process_internal_event(event).await;
+        }
 
         Ok(())
     }
 
-    async fn process_action_queue(&mut self) {
-        while let Some(action) = self.action_receiver.next() {
-            match action {
-                Action::Lichess(action) => self.process_lichess_action(action).await,
-                Action::Twitch(action) => self.process_twitch_action(action).await,
-                Action::ResetVoteTimer => self.reset_vote_timer(),
-                Action::SwitchGame(game) => self.switch_game(game),
-                Action::Shutdown => {}
+    async fn process_external_event(&mut self, event: external::Event) {
+        match event {
+            external::Event::Lichess(event) => self.process_lichess_event(event).await,
+            external::Event::Twitch(event) => self.process_twitch_event(event),
+        }
+    }
+
+    async fn process_internal_event(&mut self, event: internal::Event) {
+        match event {
+            internal::Event::Action(action) => {
+                self.process_action(action).await;
             }
+            internal::Event::Notification(notification) => {
+                self.process_notification(notification);
+            }
+        }
+    }
+
+    async fn process_action(&mut self, action: Action) {
+        match action {
+            Action::FindNewGame => self.find_new_game().await,
+            Action::Lichess(action) => self.process_lichess_action(action).await,
+            Action::Twitch(action) => self.process_twitch_action(action).await,
+            Action::SwitchGame(game) => self.switch_game(game),
+            Action::Shutdown => {}
+        }
+    }
+
+    fn process_notification(&mut self, notification: Notification) {
+        match notification {
+            Notification::ChatCommand { command } => {
+                let notification = stream::Notification::ChatCommand { command };
+                _ = self.stream_events.send(stream::Event::Notification(notification));
+            }
+            Notification::OutboundChallengeNullified => {
+                if self.game_manager.current_game().is_none() {
+                    self.internal_queue.event_sender().send_action(Action::FindNewGame);
+                }
+            }
+            Notification::GameVotesChanged => {
+                let votes = self.game_votes.game_votes();
+                let notification = stream::Notification::GameVotes { votes };
+                _ = self.stream_events.send(stream::Event::Notification(notification));
+            }
+            Notification::SettingsChanged => {
+                let settings = self.settings_votes.settings();
+                let notification = stream::Notification::Settings { settings };
+                _ = self.stream_events.send(stream::Event::Notification(notification));
+            }
+            Notification::OpponentSearchStarted => {
+                let notification = stream::Notification::State { state: State::FindingNewOpponent };
+                _ = self.stream_events.send(stream::Event::Notification(notification));
+            }
+            Notification::VotingFinished => {
+                self.game_votes.disable();
+            }
+            Notification::Game(notification) => match notification {
+                GameNotification::NewCurrentGame => {
+                    self.game_votes.enable();
+                    self.game_votes.reset();
+
+                    if let Some(game) = self.game_manager.current_game() {
+                        let notification = stream::Notification::ActiveGame { game: game.clone() };
+                        _ = self.stream_events.send(stream::Event::Notification(notification));
+                    }
+                }
+                GameNotification::GameStarted { game_id } => {
+                    if self.game_manager.current_game().is_none() {
+                        self.internal_queue.event_sender().send_action(Action::SwitchGame(game_id));
+                    }
+                }
+                GameNotification::GameAbortable { game_id } => {
+                    // Attempt to abort the game.
+                    let action = Action::Lichess(LichessAction::abort(game_id));
+                    self.internal_queue.event_sender().send_action(action);
+                }
+                GameNotification::GameFinished => {
+                    if self.game_manager.current_game().is_none() {
+                        self.internal_queue.event_sender().send_action(Action::FindNewGame);
+                        if let Some(last_game) = self.game_manager.last_game() {
+                            let notification =
+                                stream::Notification::ActiveGame { game: last_game.clone() };
+                            _ = self.stream_events.send(stream::Event::Notification(notification));
+                        }
+                    }
+                }
+                GameNotification::OurTurn { game_id } => {
+                    let Some(game) = self.game_manager.current_game() else {
+                        return;
+                    };
+                    self.game_votes.enable();
+
+                    if game.game_id == game_id {
+                        self.game_votes.schedule_move(game_id);
+                    }
+                }
+                GameNotification::TheirTurn { game_id } => {
+                    // Not sure if we really need to do anything here?
+                    log::info!("Opponents turn in game {}", game_id);
+                }
+                GameNotification::PlayerMoved { game_id, .. } => {
+                    // If we moved, we can use this opportunity to switch to another game.
+                    let Some(current_game) = self.game_manager.current_game() else {
+                        return;
+                    };
+                    if game_id == current_game.game_id {
+                        let game_update =
+                            stream::GameUpdate::Board { board: current_game.board.clone() };
+                        let notification = stream::Notification::GameUpdate(game_update);
+                        _ = self.stream_events.send(stream::Event::Notification(notification));
+                    }
+                }
+            },
         }
     }
 
@@ -148,79 +237,64 @@ impl Engine {
         match action {
             LichessAction::Account(action) => match action {
                 AccountAction::AcceptChallenge { challenge_id } => {
-                    log::info!("Accepting challenge: id {}", &challenge_id);
-                    if let Err(error) = self.lichess_manager.actor.accept_challenge(challenge_id).await {
-                        log::error!("Accept challenge error: {}", error)
-                    }
+                    _ = self.lichess_actor.accept_challenge(challenge_id).await;
                 }
                 AccountAction::CancelChallenge { challenge_id } => {
-                    log::info!("Canceling challenge: id {}", &challenge_id);
-                    let result = self.lichess_manager.actor.cancel_challenge(challenge_id).await;
-                    if let Err(error) = result {
-                        log::error!("Cancel challenge error: {}", error);
-                    }
+                    _ = self.lichess_actor.cancel_challenge(challenge_id).await;
                 }
                 AccountAction::DeclineChallenge { challenge_id, reason } => {
-                    log::info!("Declining challenge: id {}", &challenge_id);
-                    let result = self.lichess_manager.actor.decline_challenge(challenge_id, reason).await;
-                    if let Err(error) = result {
-                        log::error!("Decline challenge error: {}", error);
-                    }
+                    _ = self.lichess_actor.decline_challenge(challenge_id, reason).await;
                 }
-                AccountAction::ChallengeRandomBot => self.challenge_random_bot().await,
+                AccountAction::ChallengeRandomBot => {
+                    self.challenge_random_bot().await;
+                }
             },
             LichessAction::Game { game_id, action } => match action {
                 GameAction::Abort => {
-                    log::info!("Aborting game {}", &game_id);
-                    let result = self.lichess_manager.actor.abort(&game_id).await;
-                    if let Err(error) = result {
-                        log::error!("Game abort error: {}", error);
-                    }
+                    _ = self.lichess_actor.abort(&game_id).await;
                 }
                 GameAction::Move => {
-                    log::info!("Making move {}", &game_id);
-                    self.make_move(game_id).await;
+                    _ = self.make_move(game_id).await;
                 }
                 GameAction::OfferDraw => {
-                    log::info!("Offering to draw game {}", &game_id);
-                    let result = self.lichess_manager.actor.offer_draw(&game_id).await;
-                    if let Err(error) = result {
-                        log::error!("Game draw error: {}", error);
-                    }
+                    _ = self.lichess_actor.offer_draw(&game_id).await;
                 }
                 GameAction::Resign => {
-                    log::info!("Resigning game {}", &game_id);
-                    let result = self.lichess_manager.actor.resign(&game_id).await;
-                    if let Err(error) = result {
-                        log::error!("Game resign error: {}", error);
-                    }
+                    _ = self.lichess_actor.resign(&game_id).await;
                 }
             },
         }
     }
 
-    fn reset_vote_timer(&mut self) {
-        self.active_users.reset_vote_timer();
+    async fn find_new_game(&mut self) {
+        if self.game_manager.current_game().is_none() {
+            self.find_new_opponent();
+        }
     }
 
-    fn switch_game(&mut self, game: Game) {
-        log::info!("Switching to game {}", &game.game_id);
+    pub fn find_new_opponent(&mut self) {
+        // Switch game if one is going.
+        // Make challenge if one is not already in progress.
 
-        self.active_users.handle_new_game(&game);
+        if let Some(game_id) = self.game_manager.oldest_game_id() {
+            self.game_manager.switch_game(&game_id);
+        } else if self.challenge_manager.outbound().is_none() {
+            self.internal_queue
+                .event_sender()
+                .send_action(LichessAction::challenge_random_bot().into());
+        }
+    }
 
-        self.lichess_manager.set_game(game);
-        self.lichess_manager.update_model(&mut self.model);
+    fn switch_game(&mut self, game_id: GameId) {
+        log::info!("Switching to game {}", &game_id);
+
+        self.game_manager.switch_game(&game_id);
     }
 
     async fn challenge_random_bot(&mut self) {
         log::info!("Challenging random bot...");
 
-        if self.lichess_manager.in_game() {
-            log::info!("...but already in game.");
-            return;
-        }
-
-        let Ok(bots) = self.lichess_manager.actor.get_online_bots().await else {
+        let Ok(bots) = self.lichess_actor.get_online_bots().await else {
             return;
         };
 
@@ -229,18 +303,18 @@ impl Engine {
             .filter(|bot| {
                 let tos_violation = bot.tos_violation.unwrap_or(false);
                 let disabled = bot.disabled.unwrap_or(false);
-                let mut has_bullet = false;
-                if let Some(bullet) = &bot.perfs.bullet {
-                    has_bullet = bullet.games > 0;
+                let mut has_blitz = false;
+                if let Some(blitz) = &bot.perfs.blitz {
+                    has_blitz = blitz.games > 0;
                 }
-                return !tos_violation && !disabled && has_bullet;
+                return !tos_violation && !disabled && has_blitz;
             })
             .collect();
 
         let Some(bot) = bots.choose(&mut self.rng) else {
             return;
         };
-        let settings = self.active_users.get_settings();
+        let settings = self.settings_votes.settings();
 
         let mut clocks = Vec::<(u32, u32)>::default();
         if bot.perfs.classical.is_some() && settings.game_modes.classical {
@@ -249,10 +323,10 @@ impl Engine {
         if bot.perfs.rapid.is_some() && settings.game_modes.rapid {
             clocks.push((600, 10));
         }
-        if bot.perfs.blitz.is_some() && settings.game_modes.blitz {
+        if bot.perfs.blitz.is_some() {
             clocks.push((300, 3));
         }
-        if bot.perfs.bullet.is_some() {
+        if bot.perfs.bullet.is_some() && settings.game_modes.bullet {
             clocks.push((120, 1));
         }
 
@@ -263,54 +337,72 @@ impl Engine {
         let user = bot.username.to_string();
         log::info!("Creating challenge to bot {} ...", &user);
 
-        let result = self.lichess_manager.actor.create_challenge(user, *limit, *increment).await;
+        let result = self.lichess_actor.create_challenge(user, *limit, *increment).await;
         match result {
             Ok(challenge) => {
                 log::info!("Created challenge: id {}", &challenge.challenge.base.id);
-                self.lichess_manager.add_outbound(challenge)
             }
-            Err(error) => log::error!("Create challenge error: {}", error),
+            Err(error) => {
+                log::error!("Create challenge error: {} - retrying", error);
+                self.internal_queue
+                    .event_sender()
+                    .send_action(Action::Lichess(LichessAction::challenge_random_bot()));
+            }
         }
     }
 
     async fn make_move(&mut self, game_id: String) {
-        let Some(game) = self.lichess_manager.get_game(&game_id) else {
-            return;
-        };
+        // fn reschedule_move(event_sender: &mut EventSender, game_id: &str) {
+        //     log::info!("Rescheduling move for game {}", game_id);
+        //     let handle = tokio::task::spawn(async move {
+        //         tokio::time::sleep(Duration::from_secs(10)).await;
+        //     });
+        //     event_sender.send_action(Action::Lichess(LichessAction::make_move(game_id.to_string())))
+        // }
 
-        if !game.is_our_turn || !self.active_users.votes_ready() {
-            return;
-        }
+        let Some(vote) = self.game_votes.get_top_vote() else {
+            let Some(game) = self.game_manager.game(&game_id) else {
+                return;
+            };
 
-        log::info!("It's our turn and votes are ready in game {}", &game_id);
-
-        let Some(vote) = self.active_users.get_top_vote() else {
-            let move_gen = chess::MoveGen::new_legal(&game.board);
-            if let Some(chess_move) = move_gen.choose(&mut self.rng) {
+            let move_generator = chess::MoveGen::new_legal(&game.board);
+            if let Some(chess_move) = move_generator.choose(&mut self.rng) {
                 log::info!("Making random move {} in game {}", chess_move.to_string(), &game_id);
-                let result = self.lichess_manager.actor.make_move(&game_id, chess_move).await;
+
+                let result = self.lichess_actor.make_move(&game_id, chess_move).await;
                 if let Err(error) = result {
-                    log::error!("Make move error: {}", error.to_string())
+                    log::error!("Make move error: {}", error.to_string());
+                    // reschedule_move(self.internal_queue.event_sender(), &game_id)
                 }
             }
+
             return;
         };
 
         log::info!("Top vote acquired for game {}", &game_id);
+        let success;
 
-        let success = match vote {
-            Vote::Delay => true,
-            Vote::Draw => self.lichess_manager.actor.offer_draw(&game_id).await.is_ok(),
-            Vote::Resign => self.lichess_manager.actor.resign(&game_id).await.is_ok(),
-            Vote::Move(chess_move) => self.lichess_manager.actor.make_move(&game_id, chess_move).await.is_ok(),
+        match vote {
+            self::votes::game::Vote::Delay => {
+                self.game_votes.add_delay();
+                self.game_votes.reset_voting();
+                return;
+            }
+            self::votes::game::Vote::Draw => {
+                success = self.lichess_actor.offer_draw(&game_id).await.is_ok()
+            }
+            self::votes::game::Vote::Resign => {
+                success = self.lichess_actor.resign(&game_id).await.is_ok()
+            }
+            self::votes::game::Vote::Move(chess_move) => {
+                success = self.lichess_actor.make_move(&game_id, chess_move).await.is_ok();
+            }
         };
 
         if success {
-            if vote == Vote::Delay {
-                self.active_users.add_delay();
-            } else {
-                self.active_users.reset_game_votes();
-            }
+            self.game_votes.reset();
+        } else {
+            // reschedule_move(self.internal_queue.event_sender(), &game_id);
         }
     }
 
@@ -318,42 +410,50 @@ impl Engine {
         _ = action;
     }
 
-    fn manage_state(&mut self) {
-        if self.lichess_manager.in_game() {
-            self.lichess_manager.manage_state();
-        } else {
-            self.lichess_manager.find_new_opponent();
-        }
-
-        self.active_users.update_model(&mut self.model);
-        self.lichess_manager.update_model(&mut self.model);
-    }
-
-    async fn process_event(&mut self, event: Event) {
-        match event {
-            Event::LichessEvent(event) => self.process_lichess_event(event).await,
-            Event::TwitchEvent(event) => self.process_twitch_event(event),
-        }
-    }
-
     async fn process_lichess_event(&mut self, event: LichessEvent) {
-        match &event {
-            LichessEvent::AccountEvent { event } => {
-                type StreamEvent = lichess_api::model::board::stream::events::Event;
+        type AccountEvent = lichess_api::model::bot::stream::events::Event;
+        type GameEvent = lichess_api::model::bot::stream::game::Event;
+
+        match event {
+            LichessEvent::AccountEvent { event } => match event {
+                AccountEvent::Challenge { challenge } => {
+                    self.challenge_manager.process_challenge(challenge)
+                }
+                AccountEvent::ChallengeCanceled { challenge } => {
+                    self.challenge_manager.process_challenge_canceled(challenge)
+                }
+                AccountEvent::ChallengeDeclined { challenge } => {
+                    self.challenge_manager.process_challenge_declined(challenge)
+                }
+                AccountEvent::GameStart { game } => {
+                    self.game_manager.process_game_start(&game);
+                    // Start steraming game events so we get updates.
+                    _ = self.external_events.stream_game(&game.game_id).await;
+                }
+                AccountEvent::GameFinish { game } => {
+                    self.game_manager.process_game_finish(&game);
+                    // Cleanup finished task.
+                    _ = self.external_events.finish_streaming_game(&game.game_id).await;
+                }
+            },
+            LichessEvent::GameEvent { game_id, event } => {
                 match event {
-                    StreamEvent::GameStart { game } => _ = self.event_subscriber.handle_game_start(&game.game_id).await,
-                    StreamEvent::GameFinish { game } => {
-                        _ = self.event_subscriber.handle_game_finished(&game.game_id).await
+                    GameEvent::GameFull { game_full } => {
+                        self.game_manager.process_game_full(&game_full);
                     }
-                    _ => {}
+                    GameEvent::GameState { game_state } => {
+                        self.game_manager.process_game_update(&game_id, &game_state);
+                    }
+                    GameEvent::ChatLine { chat_line } => {
+                        _ = chat_line;
+                        // I don't have any use for these chat lines at the moment.
+                    }
+                    GameEvent::OpponentGone { opponent_gone } => {
+                        self.game_manager.process_opponent_gone(&opponent_gone);
+                    }
                 }
             }
-            LichessEvent::GameEvent { game_id, .. } => {
-                _ = self.event_subscriber.handle_game_start(&game_id).await;
-            }
         }
-
-        self.lichess_manager.process_lichess_event(event);
     }
 
     fn process_twitch_event(&mut self, event: TwitchEvent) {
@@ -361,89 +461,49 @@ impl Engine {
             TwitchEvent::ChatCommand(ChatCommand { user, command }) => {
                 self.process_chat_command(user, command);
             }
-            TwitchEvent::ChatMessage(_) => {}
-            TwitchEvent::BitsDonation(_) => {}
+            TwitchEvent::ChatMessage(_) => {
+                // Don't need these - won't be showing them all on stream, for obvious reasons.
+                // Legitimate chat commands will be shown instead.
+            }
         }
     }
 
     fn process_chat_command(&mut self, user: String, command: TwitchCommand) {
-        let chat_command = Command::new(user.to_string(), command.to_string());
-        self.model.chat_commands.push(chat_command);
+        self.internal_queue.event_sender().send_notification(Notification::ChatCommand {
+            command: Command::new(user.to_string(), command.to_string()),
+        });
 
         match command {
-            crate::twitch::command::Command::VoteMove { chess_move } => {
-                self.process_move_vote(user, chess_move);
+            crate::twitch::command::Command::VoteGame { action } => {
+                self.process_game_vote(user, action);
             }
             crate::twitch::command::Command::VoteSetting { setting, on } => {
-                self.process_setting_vote(user, setting, on);
+                self.process_settings_vote(user, setting, on);
             }
         }
     }
 
-    fn process_move_vote(&mut self, user: String, vote: String) {
-        if let Some(vote) = self.convert_vote_string(vote) {
-            self.active_users.add_move_vote(user, vote);
-        }
-    }
+    fn process_game_vote(&mut self, user: String, action: String) {
+        let action = action.to_lowercase();
 
-    fn convert_vote_string(&mut self, vote: String) -> Option<Vote> {
-        let vote = vote.to_lowercase();
-
-        if vote == "delay" && self.active_users.can_delay() {
-            self::moves::Vote::Delay.into()
-        } else if vote == "draw" {
-            self::moves::Vote::Draw.into()
-        } else if vote == "resign" {
-            self::moves::Vote::Resign.into()
-        } else if let Some(chess_move) = self.lichess_manager.convert_move(vote) {
-            self::moves::Vote::Move(chess_move).into()
+        let vote = if action == "delay" {
+            self::votes::game::Vote::Delay.into()
+        } else if action == "draw" {
+            self::votes::game::Vote::Draw.into()
+        } else if action == "resign" {
+            self::votes::game::Vote::Resign.into()
+        } else if let Some(chess_move) = self.game_manager.convert_move(action) {
+            self::votes::game::Vote::Move(chess_move).into()
         } else {
             None
+        };
+
+        if let Some(vote) = vote {
+            self.game_votes.add_vote(user, vote);
         }
     }
 
-    fn process_setting_vote(&mut self, user: String, setting: Setting, on: bool) {
-        self.active_users.add_settings_vote(user, setting, on);
-    }
-}
-
-#[derive(Default, Clone)]
-pub struct Settings {
-    pub game_modes: GameModes,
-    pub blitz: usize,
-    pub rapid: usize,
-    pub classical: usize,
-    pub total: usize,
-}
-
-impl Settings {
-    pub fn lines(&self) -> Vec<String> {
-        fn to_str(on: bool) -> &'static str {
-            if on {
-                "on"
-            } else {
-                "off"
-            }
-        }
-        let total = std::cmp::max(self.total, 1);
-        vec![
-            "Bullet: always on".to_owned(),
-            format!("Blitz: {} ({}%)", to_str(self.game_modes.blitz), self.blitz / total),
-            format!("Rapid: {} ({}%)", to_str(self.game_modes.rapid), self.rapid / total),
-            format!("Classical: {} ({}%)", to_str(self.game_modes.classical), self.classical / total),
-        ]
-    }
-}
-
-#[derive(Clone)]
-pub struct GameModes {
-    pub blitz: bool,
-    pub rapid: bool,
-    pub classical: bool,
-}
-
-impl Default for GameModes {
-    fn default() -> Self {
-        Self { blitz: true, rapid: true, classical: true }
+    fn process_settings_vote(&mut self, user: String, setting: Setting, on: bool) {
+        self.settings_votes.add_vote(user, setting, on);
     }
 }
