@@ -84,9 +84,6 @@ pub fn make_engine(stream_events: EventSender, config: Config) -> Engine {
 }
 
 pub fn make_lichess_context(config: &config::Lichess) -> LichessContext {
-    // "lip_bK42iXBZkPLjfXRzKY99"
-    // "twitch-bot-blue"
-
     let our_id = config.account.to_string();
 
     let client = reqwest::Client::builder().build().unwrap();
