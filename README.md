@@ -26,3 +26,7 @@ export TWITCH_INGESTION_SERVER="<closest twitch ingestion server>" # Only requir
 ```
 
 Finally run `./script/run.sh stream` if live streaming or `./scripts/run.sh test` to stream to a local window.
+
+# Contributing
+
+Contributions are always welcome! If you have any ideas, bug reports, or feature requests, please submit them through the issue tracker or submit a pull request. Thanks.
