@@ -128,12 +128,11 @@ impl Default for Model {
             classical: 0,
             total: 0,
         };
-        let game_votes =
-            GameVotes {
-                seconds_remaining: 30,
-                votes: Default::default(),
-                delays: Delays { current: 0, max: 6 }
-            };
+        let game_votes = GameVotes {
+            seconds_remaining: 30,
+            votes: Default::default(),
+            delays: Delays { current: 0, max: 6 },
+        };
         let state = State::Unknown;
 
         Self {
@@ -200,7 +199,7 @@ impl GameVotes {
         let mut lines = vec![
             self.delays.to_string(),
             "".to_string(),
-            format!("Votes ({} seconds left):", self.seconds_remaining)
+            format!("Votes ({} seconds left):", self.seconds_remaining),
         ];
 
         let mut vote_lines: Vec<(String, VoteStats)> = self.votes.clone().into_iter().collect();

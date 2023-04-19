@@ -1,4 +1,4 @@
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     engine::events::internal::{EventSender, Notification},
@@ -113,11 +113,7 @@ impl Settings {
             if total == 0 || count == 0 {
                 "off: no votes".to_string()
             } else {
-                let state = if on {
-                    "on"
-                } else {
-                    "off"
-                };
+                let state = if on { "on" } else { "off" };
 
                 let percentage = 100.0 * count as f32 / total as f32;
                 let percentage = format!("{:.width$}", percentage, width = 3);

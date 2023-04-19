@@ -195,8 +195,9 @@ impl Engine {
                 let notification = stream::Notification::Settings { settings };
                 _ = self.stream_events.send(stream::Event::Notification(notification));
             }
-            Notification::ChallengeSent { id, rating} => {
-                let notification = stream::Notification::State { state: State::ChallengingUser { id, rating } };
+            Notification::ChallengeSent { id, rating } => {
+                let notification =
+                    stream::Notification::State { state: State::ChallengingUser { id, rating } };
                 _ = self.stream_events.send(stream::Event::Notification(notification));
             }
             Notification::VotingFinished => {
@@ -229,12 +230,14 @@ impl Engine {
                     }
 
                     let mut event_sender = self.internal_queue.event_sender();
-                    
+
                     event_sender.send_action(Action::SwitchGame(game_id.to_string()));
 
                     tokio::task::spawn(async move {
                         tokio::time::sleep(Duration::from_secs(30)).await;
-                        event_sender.send_notification(Notification::Game(GameNotification::GameAbortable { game_id }));
+                        event_sender.send_notification(Notification::Game(
+                            GameNotification::GameAbortable { game_id },
+                        ));
                     });
                 }
                 GameNotification::GameAbortable { game_id } => {
@@ -382,9 +385,14 @@ impl Engine {
                 let tos_violation = bot.tos_violation.unwrap_or(false);
                 let disabled = bot.disabled.unwrap_or(false);
 
-                let valid_blitz = bot.perfs.blitz.as_ref().and_then(|blitz|{
-                    Some(blitz.rating != 0 && blitz.prov.unwrap_or(true) && blitz.games > 0)
-                }).unwrap_or(false);
+                let valid_blitz = bot
+                    .perfs
+                    .blitz
+                    .as_ref()
+                    .and_then(|blitz| {
+                        Some(blitz.rating != 0 && blitz.prov.unwrap_or(true) && blitz.games > 0)
+                    })
+                    .unwrap_or(false);
 
                 return !tos_violation && !disabled && valid_blitz;
             })
@@ -392,15 +400,15 @@ impl Engine {
 
         if bots.is_empty() {
             self.internal_queue
-            .event_sender()
-            .send_action(Action::Lichess(LichessAction::challenge_random_bot()));
+                .event_sender()
+                .send_action(Action::Lichess(LichessAction::challenge_random_bot()));
             return;
         }
 
         // Turns out to be a decent distribution.
-        let weights = bots.iter().map(|bot|{
-            (500_000.0 / bot.perfs.blitz.as_ref().unwrap().rating as f32) as u64
-        });
+        let weights = bots
+            .iter()
+            .map(|bot| (500_000.0 / bot.perfs.blitz.as_ref().unwrap().rating as f32) as u64);
         let distribution = rand::distributions::WeightedIndex::new(weights).unwrap();
         let bot = &bots[distribution.sample(&mut self.rng)];
 
@@ -437,12 +445,10 @@ impl Engine {
         match result {
             Ok(challenge) => {
                 log::info!("Created challenge: id {}", &challenge.challenge.base.id);
-                self.internal_queue
-                    .event_sender()
-                    .send_notification(Notification::ChallengeSent {
-                        id: bot.id.to_string(),
-                        rating,
-                    });
+                self.internal_queue.event_sender().send_notification(Notification::ChallengeSent {
+                    id: bot.id.to_string(),
+                    rating,
+                });
             }
             Err(error) => {
                 log::error!("Create challenge error: {} - retrying", error);
@@ -545,7 +551,9 @@ impl Engine {
                         // I don't have any use for these chat lines at the moment.
                     }
                     GameEvent::OpponentGone { opponent_gone } => {
-                        self.internal_queue.event_sender().send_notification(Notification::Game(GameNotification::GameAbortable { game_id }));
+                        self.internal_queue.event_sender().send_notification(Notification::Game(
+                            GameNotification::GameAbortable { game_id },
+                        ));
                         self.game_manager.process_opponent_gone(&opponent_gone);
                     }
                 }

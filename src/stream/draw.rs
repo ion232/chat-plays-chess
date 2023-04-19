@@ -174,7 +174,7 @@ impl Context {
         let brown = SolidSource::from_unpremultiplied_argb(0xff, 128, 72, 60);
 
         let color = match state {
-            State::ChallengingUser {..} => brown,
+            State::ChallengingUser { .. } => brown,
             State::OurTurn => green,
             State::TheirTurn => light_red,
             State::GameFinished => green,
@@ -199,10 +199,8 @@ impl Context {
         if move_history.len() % 2 != 0 {
             move_history.push("".to_string());
         }
-        let mut pairs: Vec<(String, String)> = move_history
-            .chunks(2)
-            .map(|pair| (pair[0].to_string(), pair[1].to_string()))
-            .collect();
+        let mut pairs: Vec<(String, String)> =
+            move_history.chunks(2).map(|pair| (pair[0].to_string(), pair[1].to_string())).collect();
         let pairs: Vec<(String, String)> = pairs.split_off(pairs.len().saturating_sub(28));
         let first_column: Vec<String> = pairs
             .iter()
@@ -307,11 +305,7 @@ impl Context {
     fn draw_chat_commands(&mut self, chat_commands: &Vec<Command>, fonts: &Fonts) {
         let (x, y) = COMMANDS_ORIGIN;
         let (width, height) = COMMANDS_DIMS;
-        let lines = chat_commands
-            .into_iter()
-            .rev()
-            .take(14)
-            .map(|c| c.to_string()).collect();
+        let lines = chat_commands.into_iter().rev().take(14).map(|c| c.to_string()).collect();
         self.draw_box(x, y, width, height);
         self.draw_text(x + 12.0, y + 12.0, &fonts.retro, 42.0, "Chat commands:");
         self.draw_lines(x + 12.0, y + 64.0, &fonts.retro, 32.0, &lines);
@@ -365,7 +359,15 @@ impl Context {
         self.draw_coloured_text(x, y, font, size, text, self.sources.black.clone())
     }
 
-    fn draw_coloured_text(&mut self, x: f32, y: f32, font: &Font, size: f32, text: &str, source: SolidSource) {
+    fn draw_coloured_text(
+        &mut self,
+        x: f32,
+        y: f32,
+        font: &Font,
+        size: f32,
+        text: &str,
+        source: SolidSource,
+    ) {
         let options = DrawOptions::new();
 
         // Sourced and edited from: https://github.com/l4l/yofi/blob/53863d39b5c2c5709df280fba1da7a80dd924492/src/font/fdue.rs#L172-L227

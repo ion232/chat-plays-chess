@@ -90,10 +90,8 @@ impl GameManager {
             return None;
         };
 
-        let should_remove = self.games
-            .get(current_game_id)
-            .and_then(|game| game.finished.into())
-            .unwrap_or(false);
+        let should_remove =
+            self.games.get(current_game_id).and_then(|game| game.finished.into()).unwrap_or(false);
 
         if should_remove {
             _ = self.games.remove(current_game_id);

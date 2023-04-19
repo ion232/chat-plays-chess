@@ -2,7 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use lichess_api::model::Speed;
 use tokio::task::JoinHandle;
-use tokio::time::{Interval, Instant};
+use tokio::time::{Instant, Interval};
 
 use crate::lichess::action::Action as LichessAction;
 use crate::{
@@ -92,7 +92,7 @@ impl VoteTracker {
     pub fn schedule_action_vote(&mut self, game_id: GameId) {
         let mut event_sender = self.event_sender.clone();
         let vote_duration = self.vote_duration.clone();
-        
+
         if let Some(vote_timer) = &mut self.vote_timer {
             vote_timer.timer_handle.abort();
         }
@@ -107,10 +107,7 @@ impl VoteTracker {
             event_sender.send_action(Action::Lichess(LichessAction::make_move(game_id)));
         });
 
-        self.vote_timer = VoteTimer {
-            start: Instant::now(),
-            timer_handle,
-        }.into();
+        self.vote_timer = VoteTimer { start: Instant::now(), timer_handle }.into();
     }
 
     pub fn game_votes(&self) -> crate::stream::model::GameVotes {
