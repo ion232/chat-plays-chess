@@ -6,6 +6,7 @@ use std::time::Duration;
 use lichess_api::model::users::User;
 use lichess_api::model::Speed;
 
+use rand::prelude::Distribution;
 use rand::rngs::ThreadRng;
 use rand::seq::IteratorRandom;
 use rand::seq::SliceRandom;
@@ -22,12 +23,13 @@ use crate::lichess::action::Actor as LichessActor;
 use crate::lichess::action::GameAction;
 use crate::lichess::challenge::ChallengeManager;
 use crate::lichess::events::Event as LichessEvent;
-use crate::lichess::game::GameId;
 use crate::lichess::game::GameManager;
 use crate::lichess::Context as LichessContext;
 
+use crate::stream::audio::Clip;
 use crate::stream::model::Command;
 
+use crate::stream::model::Side;
 use crate::stream::model::State;
 use crate::twitch::action::Action as TwitchAction;
 use crate::twitch::command::Command as TwitchCommand;
@@ -39,6 +41,7 @@ use crate::twitch::Context as TwitchContext;
 use self::events::internal::Action;
 use self::events::internal::GameNotification;
 use self::events::internal::Notification;
+use self::votes::game::Vote;
 
 pub struct Engine {
     game_votes: self::votes::game::VoteTracker,
@@ -68,7 +71,7 @@ impl Engine {
                 &Speed::Blitz,
                 internal_queue.event_sender(),
             ),
-            settings_votes: Default::default(),
+            settings_votes: self::votes::settings::VoteTracker::new(internal_queue.event_sender()),
             external_events: external::EventManager::new(lichess_context.clone(), twitch_context),
             stream_events,
             challenge_manager: ChallengeManager::new(
@@ -93,14 +96,35 @@ impl Engine {
     }
 
     pub async fn run(&mut self) -> Result<()> {
+        let mut now = tokio::time::Instant::now();
+
         while self.is_running {
-            self.process().await?;
+            self.process(&mut now).await?;
         }
 
         Ok(())
     }
 
-    pub async fn process(&mut self) -> Result<()> {
+    pub async fn process(&mut self, now: &mut tokio::time::Instant) -> Result<()> {
+        // Update clock timers.
+        // Would normally use events - but this way avoids log spam.
+        if now.elapsed() > Duration::from_millis(1000) {
+            self.game_manager.advance_clocks(now.elapsed());
+            *now = tokio::time::Instant::now();
+
+            if let Some(current_game) = self.game_manager.current_game() {
+                let (side, timer) = if current_game.is_our_turn {
+                    (Side::Ours, current_game.us.timer)
+                } else {
+                    (Side::Theirs, current_game.opponent.timer)
+                };
+
+                let game_update = stream::GameUpdate::Timer { side, timer };
+                let notification = stream::Notification::GameUpdate(game_update);
+                _ = self.stream_events.send(stream::Event::Notification(notification));
+            }
+        }
+
         // Check for errors as well and ensure we can recover from a broken or ended stream.
         if let Ok(Some(event)) = self.external_events.next_event() {
             log::info!("External event: {event:?}");
@@ -137,11 +161,15 @@ impl Engine {
 
     async fn process_action(&mut self, action: Action) {
         match action {
-            Action::FindNewGame => self.find_new_game().await,
             Action::Lichess(action) => self.process_lichess_action(action).await,
             Action::Twitch(action) => self.process_twitch_action(action).await,
+            Action::PlayClip(clip) => {
+                let action = stream::Action::PlayClip { clip };
+                _ = self.stream_events.send(stream::Event::Action(action));
+            }
+            Action::FindNewGame => self.find_new_game().await,
             Action::SwitchGame(game) => self.game_manager.switch_game(&game),
-            Action::Shutdown => {}
+            Action::Shutdown => self.is_running = false,
         }
     }
 
@@ -167,12 +195,16 @@ impl Engine {
                 let notification = stream::Notification::Settings { settings };
                 _ = self.stream_events.send(stream::Event::Notification(notification));
             }
-            Notification::OpponentSearchStarted => {
-                let notification = stream::Notification::State { state: State::FindingNewOpponent };
+            Notification::ChallengeSent { id, rating} => {
+                let notification = stream::Notification::State { state: State::ChallengingUser { id, rating } };
                 _ = self.stream_events.send(stream::Event::Notification(notification));
             }
             Notification::VotingFinished => {
-                self.game_votes.disable();
+                if let Some(Vote::Delay) = self.game_votes.get_top_vote() {
+                    self.game_votes.enable();
+                } else {
+                    self.game_votes.disable();
+                }
             }
             Notification::Game(notification) => match notification {
                 GameNotification::NewCurrentGame => {
@@ -182,12 +214,28 @@ impl Engine {
                     if let Some(game) = self.game_manager.current_game() {
                         let notification = stream::Notification::ActiveGame { game: game.clone() };
                         _ = self.stream_events.send(stream::Event::Notification(notification));
+
+                        let action = stream::Action::PlayClip { clip: Clip::Start };
+                        _ = self.stream_events.send(stream::Event::Action(action))
                     }
                 }
                 GameNotification::GameStarted { game_id } => {
-                    if self.game_manager.current_game().is_none() {
-                        self.internal_queue.event_sender().send_action(Action::SwitchGame(game_id));
+                    self.challenge_manager.cancel_outbound();
+
+                    if let Some(game) = &self.game_manager.current_game() {
+                        if game.game_id == game_id {
+                            return;
+                        }
                     }
+
+                    let mut event_sender = self.internal_queue.event_sender();
+                    
+                    event_sender.send_action(Action::SwitchGame(game_id.to_string()));
+
+                    tokio::task::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                        event_sender.send_notification(Notification::Game(GameNotification::GameAbortable { game_id }));
+                    });
                 }
                 GameNotification::GameAbortable { game_id } => {
                     // Attempt to abort the game.
@@ -195,30 +243,42 @@ impl Engine {
                     self.internal_queue.event_sender().send_action(action);
                 }
                 GameNotification::GameFinished => {
-                    if self.game_manager.current_game().is_none() {
-                        self.internal_queue.event_sender().send_action(Action::FindNewGame);
-                        if let Some(last_game) = self.game_manager.last_game() {
-                            let notification =
-                                stream::Notification::ActiveGame { game: last_game.clone() };
-                            _ = self.stream_events.send(stream::Event::Notification(notification));
-                        }
+                    if self.game_manager.current_game().is_some() {
+                        return;
                     }
+
+                    self.internal_queue.event_sender().send_action(Action::FindNewGame);
+
+                    if let Some(last_game) = self.game_manager.last_game() {
+                        let notification =
+                            stream::Notification::ActiveGame { game: last_game.clone() };
+                        _ = self.stream_events.send(stream::Event::Notification(notification));
+                    }
+
+                    let notification = stream::Notification::State { state: State::GameFinished };
+                    _ = self.stream_events.send(stream::Event::Notification(notification));
                 }
                 GameNotification::OurTurn { game_id } => {
                     let Some(game) = self.game_manager.current_game() else {
                         return;
                     };
+
                     self.game_votes.enable();
 
                     if game.game_id == game_id {
-                        self.game_votes.schedule_move(game_id);
+                        self.game_votes.schedule_action_vote(game_id);
                     }
+
+                    let notification = stream::Notification::State { state: State::OurTurn };
+                    _ = self.stream_events.send(stream::Event::Notification(notification));
                 }
                 GameNotification::TheirTurn { game_id } => {
                     // Not sure if we really need to do anything here?
                     log::info!("Opponents turn in game {}", game_id);
+                    let notification = stream::Notification::State { state: State::TheirTurn };
+                    _ = self.stream_events.send(stream::Event::Notification(notification));
                 }
-                GameNotification::PlayerMoved { game_id, .. } => {
+                GameNotification::PlayerMoved { game_id, was_us } => {
                     // If we moved, we can use this opportunity to switch to another game.
                     let Some(current_game) = self.game_manager.current_game() else {
                         return;
@@ -226,6 +286,23 @@ impl Engine {
                     if game_id == current_game.game_id {
                         let game_update =
                             stream::GameUpdate::Board { board: current_game.board.clone() };
+                        let notification = stream::Notification::GameUpdate(game_update);
+                        _ = self.stream_events.send(stream::Event::Notification(notification));
+
+                        let game_update = stream::GameUpdate::MoveHistory {
+                            moves: current_game.move_history.clone(),
+                        };
+                        let notification = stream::Notification::GameUpdate(game_update);
+                        _ = self.stream_events.send(stream::Event::Notification(notification));
+
+                        let side = if was_us { Side::Ours } else { Side::Theirs };
+                        let timer = if was_us {
+                            current_game.us.timer
+                        } else {
+                            current_game.opponent.timer
+                        };
+
+                        let game_update = stream::GameUpdate::Timer { side, timer };
                         let notification = stream::Notification::GameUpdate(game_update);
                         _ = self.stream_events.send(stream::Event::Notification(notification));
                     }
@@ -270,16 +347,19 @@ impl Engine {
     async fn find_new_game(&mut self) {
         if self.game_manager.current_game().is_none() {
             self.find_new_opponent();
+        } else {
+            log::warn!("Cannot find new game - already in a game.")
         }
     }
 
     pub fn find_new_opponent(&mut self) {
-        // Switch game if one is going.
-        // Make challenge if one is not already in progress.
-
         if let Some(game_id) = self.game_manager.oldest_game_id() {
             self.game_manager.switch_game(&game_id);
-        } else if self.challenge_manager.outbound().is_none() {
+        } else {
+            if self.challenge_manager.outbound().is_some() {
+                self.challenge_manager.cancel_outbound();
+            }
+
             self.internal_queue
                 .event_sender()
                 .send_action(LichessAction::challenge_random_bot().into());
@@ -290,6 +370,9 @@ impl Engine {
         log::info!("Challenging random bot...");
 
         let Ok(bots) = self.lichess_actor.get_online_bots().await else {
+            self.internal_queue
+            .event_sender()
+            .send_action(Action::Lichess(LichessAction::challenge_random_bot()));
             return;
         };
 
@@ -298,30 +381,48 @@ impl Engine {
             .filter(|bot| {
                 let tos_violation = bot.tos_violation.unwrap_or(false);
                 let disabled = bot.disabled.unwrap_or(false);
-                let mut has_blitz = false;
-                if let Some(blitz) = &bot.perfs.blitz {
-                    has_blitz = blitz.games > 0;
-                }
-                return !tos_violation && !disabled && has_blitz;
+
+                let valid_blitz = bot.perfs.blitz.as_ref().and_then(|blitz|{
+                    Some(blitz.rating != 0 && blitz.prov.unwrap_or(true) && blitz.games > 0)
+                }).unwrap_or(false);
+
+                return !tos_violation && !disabled && valid_blitz;
             })
             .collect();
 
-        let Some(bot) = bots.choose(&mut self.rng) else {
+        if bots.is_empty() {
+            self.internal_queue
+            .event_sender()
+            .send_action(Action::Lichess(LichessAction::challenge_random_bot()));
             return;
-        };
+        }
+
+        // Turns out to be a decent distribution.
+        let weights = bots.iter().map(|bot|{
+            (500_000.0 / bot.perfs.blitz.as_ref().unwrap().rating as f32) as u64
+        });
+        let distribution = rand::distributions::WeightedIndex::new(weights).unwrap();
+        let bot = &bots[distribution.sample(&mut self.rng)];
+
         let settings = self.settings_votes.settings();
 
+        let mut rating = bot.perfs.blitz.as_ref().unwrap().rating;
         let mut clocks = Vec::<(u32, u32)>::default();
+
         if bot.perfs.classical.is_some() && settings.game_modes.classical {
+            rating = bot.perfs.classical.as_ref().unwrap().rating;
             clocks.push((1800, 0));
         }
         if bot.perfs.rapid.is_some() && settings.game_modes.rapid {
+            rating = bot.perfs.rapid.as_ref().unwrap().rating;
             clocks.push((600, 10));
         }
         if bot.perfs.blitz.is_some() {
+            rating = bot.perfs.blitz.as_ref().unwrap().rating;
             clocks.push((300, 3));
         }
         if bot.perfs.bullet.is_some() && settings.game_modes.bullet {
+            rating = bot.perfs.bullet.as_ref().unwrap().rating;
             clocks.push((120, 1));
         }
 
@@ -336,6 +437,12 @@ impl Engine {
         match result {
             Ok(challenge) => {
                 log::info!("Created challenge: id {}", &challenge.challenge.base.id);
+                self.internal_queue
+                    .event_sender()
+                    .send_notification(Notification::ChallengeSent {
+                        id: bot.id.to_string(),
+                        rating,
+                    });
             }
             Err(error) => {
                 log::error!("Create challenge error: {} - retrying", error);
@@ -359,7 +466,9 @@ impl Engine {
                 let result = self.lichess_actor.make_move(&game_id, chess_move).await;
                 if let Err(error) = result {
                     log::error!("Make move error: {}", error.to_string());
-                    // reschedule_move(self.internal_queue.event_sender(), &game_id)
+                    // reschedule_action_vote(self.internal_queue.event_sender(), &game_id)
+                } else {
+                    self.game_votes.reset();
                 }
             }
 
@@ -373,6 +482,7 @@ impl Engine {
             self::votes::game::Vote::Delay => {
                 self.game_votes.add_delay();
                 self.game_votes.reset_voting();
+                self.game_votes.schedule_action_vote(game_id);
                 return;
             }
             self::votes::game::Vote::Draw => {
@@ -419,6 +529,7 @@ impl Engine {
                     self.game_manager.process_game_finish(&game);
                     // Cleanup finished task.
                     _ = self.external_events.finish_streaming_game(&game.game_id).await;
+                    self.internal_queue.event_sender().send_action(Action::FindNewGame);
                 }
             },
             LichessEvent::GameEvent { game_id, event } => {
@@ -434,6 +545,7 @@ impl Engine {
                         // I don't have any use for these chat lines at the moment.
                     }
                     GameEvent::OpponentGone { opponent_gone } => {
+                        self.internal_queue.event_sender().send_notification(Notification::Game(GameNotification::GameAbortable { game_id }));
                         self.game_manager.process_opponent_gone(&opponent_gone);
                     }
                 }
@@ -454,18 +566,19 @@ impl Engine {
     }
 
     fn process_chat_command(&mut self, chat_command: ChatCommand) {
-        self.internal_queue.event_sender().send_notification(Notification::ChatCommand(chat_command.clone()));
+        self.internal_queue
+            .event_sender()
+            .send_notification(Notification::ChatCommand(chat_command.clone()));
 
         let ChatCommand { user, command } = chat_command;
 
         match command {
             TwitchCommand::VoteGame { action } => {
                 self.process_game_vote(user, action);
-            },
+            }
             TwitchCommand::VoteSetting { setting, on } => {
                 self.process_settings_vote(user, setting, on);
-
-            },
+            }
         }
     }
 

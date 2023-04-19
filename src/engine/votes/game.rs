@@ -2,6 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use lichess_api::model::Speed;
 use tokio::task::JoinHandle;
+use tokio::time::{Interval, Instant};
 
 use crate::lichess::action::Action as LichessAction;
 use crate::{
@@ -20,8 +21,13 @@ pub struct VoteTracker {
     delays: Delays,
     votes: HashMap<Username, Option<Vote>>,
     vote_duration: Duration,
-    vote_timer_handle: Option<JoinHandle<()>>,
+    vote_timer: Option<VoteTimer>,
     event_sender: EventSender,
+}
+
+pub struct VoteTimer {
+    pub start: tokio::time::Instant,
+    timer_handle: JoinHandle<()>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
@@ -42,32 +48,37 @@ impl VoteTracker {
             Speed::Classical => (10, 72),
             _ => (1, 1),
         };
-        let vote_duration = Duration::from_secs(vote_duration);
 
         Self {
             enabled: false,
             delays: Delays::new(max_delays),
             votes: Default::default(),
-            vote_duration,
-            vote_timer_handle: None,
+            vote_duration: Duration::from_secs(vote_duration),
+            vote_timer: None,
             event_sender,
         }
     }
 
     pub fn add_vote(&mut self, user: Username, vote: Vote) {
         if !self.enabled {
+            log::warn!("Voting not currently enabled.");
             return;
         }
 
         if !self.delays.can_delay() && vote == Vote::Delay {
+            log::warn!("Can't delay.");
             return;
         };
 
         _ = self.votes.insert(user, vote.into());
+
+        self.event_sender.send_notification(Notification::GameVotesChanged);
     }
 
     pub fn add_delay(&mut self) {
         self.delays.add_delay();
+
+        self.event_sender.send_notification(Notification::GameVotesChanged);
     }
 
     pub fn enable(&mut self) {
@@ -78,20 +89,40 @@ impl VoteTracker {
         self.enabled = false;
     }
 
-    pub fn schedule_move(&mut self, game_id: GameId) {
+    pub fn schedule_action_vote(&mut self, game_id: GameId) {
         let mut event_sender = self.event_sender.clone();
         let vote_duration = self.vote_duration.clone();
+        
+        if let Some(vote_timer) = &mut self.vote_timer {
+            vote_timer.timer_handle.abort();
+        }
 
-        self.vote_timer_handle = tokio::task::spawn(async move {
-            tokio::time::sleep(vote_duration).await;
-            event_sender.send_action(Action::Lichess(LichessAction::make_move(game_id)));
+        let timer_handle = tokio::task::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            for _ in 0..vote_duration.as_secs() {
+                interval.tick().await;
+                event_sender.send_notification(Notification::GameVotesChanged)
+            }
             event_sender.send_notification(Notification::VotingFinished);
-        })
-        .into();
+            event_sender.send_action(Action::Lichess(LichessAction::make_move(game_id)));
+        });
+
+        self.vote_timer = VoteTimer {
+            start: Instant::now(),
+            timer_handle,
+        }.into();
     }
 
     pub fn game_votes(&self) -> crate::stream::model::GameVotes {
+        let seconds_remaining = if let Some(timer) = &self.vote_timer {
+            let max = self.vote_duration.as_secs() as i64;
+            (max - timer.start.elapsed().as_secs() as i64).clamp(0, max)
+        } else {
+            0
+        } as u64;
+
         let mut game_votes = crate::stream::model::GameVotes {
+            seconds_remaining,
             votes: Default::default(),
             delays: self.delays.clone(),
         };
@@ -129,12 +160,14 @@ impl VoteTracker {
     }
 
     pub fn reset(&mut self) {
-        self.delays = Default::default();
+        self.delays = Delays::new(self.delays.max);
         self.reset_voting();
     }
 
     pub fn reset_voting(&mut self) {
         self.votes.clear();
+        self.vote_timer = None;
+        self.event_sender.send_notification(Notification::GameVotesChanged);
     }
 }
 

@@ -57,30 +57,30 @@ pub struct Timer {
     pub seconds: u64,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct GameVotes {
+    pub seconds_remaining: u64,
     pub votes: HashMap<String, VoteStats>,
     pub delays: Delays,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct VoteStats {
     pub vote_changes: i32,
     pub total_votes: u32,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Delays {
     pub current: u8,
     pub max: u8,
 }
 
 pub enum State {
-    FindingNewOpponent,
+    ChallengingUser { id: String, rating: u32 },
     OurTurn,
-    OpponentsTurn,
+    TheirTurn,
     GameFinished,
-    WaitingForChallengeReply { remaining: u64 },
     Unknown,
 }
 
@@ -129,7 +129,11 @@ impl Default for Model {
             total: 0,
         };
         let game_votes =
-            GameVotes { votes: Default::default(), delays: Delays { current: 0, max: 6 } };
+            GameVotes {
+                seconds_remaining: 30,
+                votes: Default::default(),
+                delays: Delays { current: 0, max: 6 }
+            };
         let state = State::Unknown;
 
         Self {
@@ -193,14 +197,22 @@ impl Timer {
 impl GameVotes {
     pub fn lines(&self) -> Vec<String> {
         // Not the most efficient, but the max legal chess moves appears to be 218.
-        let mut lines: Vec<(String, VoteStats)> = self.votes.clone().into_iter().collect();
-        lines.sort_by(|l, r| r.1.total_votes.cmp(&l.1.total_votes));
-        let mut lines: Vec<String> = lines
+        let mut lines = vec![
+            self.delays.to_string(),
+            "".to_string(),
+            format!("Votes ({} seconds left):", self.seconds_remaining)
+        ];
+
+        let mut vote_lines: Vec<(String, VoteStats)> = self.votes.clone().into_iter().collect();
+        vote_lines.sort_by(|l, r| r.1.total_votes.cmp(&l.1.total_votes));
+        let vote_lines: Vec<String> = vote_lines
             .into_iter()
             .map(|(chess_move, vote_stats)| format!("{}: {}", chess_move, vote_stats.to_string()))
             .collect();
-        lines.insert(0, self.delays.to_string());
-        lines.insert(1, "".to_string());
+
+        for line in vote_lines.into_iter() {
+            lines.push(line)
+        }
 
         lines
     }
@@ -223,14 +235,14 @@ impl Delays {
     }
 
     pub fn can_delay(&self) -> bool {
-        self.current >= self.max
+        self.current < self.max
     }
 }
 
 impl ToString for Title {
     fn to_string(&self) -> String {
         let Some(speed) = &self.speed else {
-            return "???".to_string();
+            return "".to_string();
         };
 
         // TODO: Move this into lichess api.
@@ -259,8 +271,9 @@ impl ToString for Command {
 
 impl ToString for Player {
     fn to_string(&self) -> String {
+        let name: String = self.name.chars().take(15).collect::<String>();
         let rating = self.rating.map(|r| r.to_string()).unwrap_or("????".to_string());
-        format!("{} {} {}", self.name, rating, self.timer.to_string())
+        format!("{} {} {}", name, rating, self.timer.to_string())
     }
 }
 
@@ -277,34 +290,34 @@ impl ToString for Timer {
 
 impl ToString for VoteStats {
     fn to_string(&self) -> String {
-        let op = if self.vote_changes.is_positive() { "+" } else { "" };
-        format!("{} ({}{})", self.total_votes, op, self.vote_changes)
+        let changes = if self.vote_changes != 0 {
+            if self.vote_changes.is_positive() {
+                format!("(+{})", self.vote_changes)
+            } else {
+                format!("({})", self.vote_changes)
+            }
+        } else {
+            "".to_string()
+        };
+
+        format!("{} {}", self.total_votes, changes)
     }
 }
 
 impl ToString for Delays {
     fn to_string(&self) -> String {
-        let full_count = self.current as usize;
-        let empty_count = (self.max - self.current) as usize;
-
-        let full = "[x]".repeat(full_count);
-        let empty = "[ ]".repeat(empty_count);
-
-        format!("Delays:{}{}", full, empty)
+        format!("Delays ({}/{})", self.current, self.max)
     }
 }
 
 impl ToString for State {
     fn to_string(&self) -> String {
         match self {
-            State::FindingNewOpponent => "Finding new opponent...".to_string(),
             State::OurTurn => "In game: Our turn".to_string(),
-            State::OpponentsTurn => "In game: Opponents turn".to_string(),
+            State::TheirTurn => "In game: Their turn".to_string(),
             State::GameFinished => "Game finished".to_string(),
-            State::WaitingForChallengeReply { remaining } => {
-                format!("Sent challenge - waiting {}s for response...", remaining).to_string()
-            }
             State::Unknown => "Unknown".to_string(),
+            State::ChallengingUser { id, rating } => format!("Challenging {} ({})", id, rating),
         }
     }
 }

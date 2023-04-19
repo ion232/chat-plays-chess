@@ -1,8 +1,8 @@
-readonly kernel_name=$(uname -s)
+kernel_name=$(uname -s)
 
-readonly runtime_dir="./runtime"
-readonly config_file="$runtime_dir/config.json"
-readonly video_fifo="$runtime_dir/video"
+runtime_dir="./runtime"
+config_file="$runtime_dir/config.json"
+video_fifo="$runtime_dir/video"
 
 function setup() {
     echo "Setting up runtime."
@@ -64,6 +64,10 @@ function make_config() {
         ')
 
     echo "$config" > $config_file
+}
+
+function build_app() {
+    cargo build --release
 }
 
 function run_app() {

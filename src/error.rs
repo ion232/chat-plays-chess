@@ -22,6 +22,15 @@ pub enum Error {
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
 
+    #[error("regex error")]
+    RegexError,
+
+    #[error("rodio play error: {0}")]
+    RodioPlayError(#[from] rodio::PlayError),
+
+    #[error("rodio stream error: {0}")]
+    RodioStreamError(#[from] rodio::StreamError),
+
     #[error("unknown error: {0}")]
     Unknown(String),
 }

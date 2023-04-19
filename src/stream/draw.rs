@@ -167,7 +167,21 @@ impl Context {
         let (width, height) = CURRENT_STATE_DIMS;
         let text = state.to_string();
         self.draw_box(x, y, width, height);
-        self.draw_text(x + 24.0, y + 24.0, &fonts.retro, 32.0, &text)
+
+        let black = self.sources.black.clone();
+        let green = SolidSource::from_unpremultiplied_argb(0xff, 73, 133, 53);
+        let light_red = SolidSource::from_unpremultiplied_argb(0xff, 201, 34, 22);
+        let brown = SolidSource::from_unpremultiplied_argb(0xff, 128, 72, 60);
+
+        let color = match state {
+            State::ChallengingUser {..} => brown,
+            State::OurTurn => green,
+            State::TheirTurn => light_red,
+            State::GameFinished => green,
+            State::Unknown => black,
+        };
+
+        self.draw_coloured_text(x + 24.0, y + 32.0, &fonts.retro, 32.0, &text, color);
     }
 
     fn draw_settings(&mut self, settings: &Settings, fonts: &Fonts) {
@@ -175,25 +189,45 @@ impl Context {
         let (width, height) = SETTINGS_DIMS;
         let lines = settings.lines();
         self.draw_box(x, y, width, height);
-        self.draw_lines(x + 24.0, y + 24.0, &fonts.retro, 48.0, &lines)
+        self.draw_lines(x + 24.0, y + 32.0, &fonts.retro, 40.0, &lines)
     }
 
     fn draw_move_history(&mut self, move_history: &Vec<String>, fonts: &Fonts) {
         let (x, y) = MOVE_HISTORY_ORIGIN;
         let (width, height) = MOVE_HISTORY_DIMS;
-        let lines = move_history.clone();
+        let mut move_history = move_history.clone();
+        if move_history.len() % 2 != 0 {
+            move_history.push("".to_string());
+        }
+        let mut pairs: Vec<(String, String)> = move_history
+            .chunks(2)
+            .map(|pair| (pair[0].to_string(), pair[1].to_string()))
+            .collect();
+        let pairs: Vec<(String, String)> = pairs.split_off(pairs.len().saturating_sub(28));
+        let first_column: Vec<String> = pairs
+            .iter()
+            .enumerate()
+            .take(14)
+            .map(|(index, (m1, m2))| format!("{}: {} {}", index + 1, m1, m2))
+            .collect();
+        let second_column: Vec<String> = pairs
+            .iter()
+            .enumerate()
+            .skip(14)
+            .map(|(index, (m1, m2))| format!("{}: {} {}", index + 1, m1, m2))
+            .collect();
         self.draw_box(x, y, width, height);
-        self.draw_lines(x + 12.0, y + 12.0, &fonts.retro, 24.0, &lines);
+        self.draw_lines(x + 12.0, y + 12.0, &fonts.retro, 30.0, &first_column);
+        self.draw_lines(x + 12.0, y + 12.0, &fonts.retro, 30.0, &second_column);
     }
 
     fn draw_title(&mut self, title: &Title, fonts: &Fonts) {
         let (x, y) = TITLE_ORIGIN;
         let (width, height) = TITLE_DIMS;
 
-        let lines = vec![title.to_string(), title.url.to_string()];
-
         self.draw_box(x, y, width, height);
-        self.draw_lines(x + 12.0, y + 12.0, &fonts.retro, 42.0, &lines);
+        self.draw_text(x + 12.0, y + 36.0, &fonts.retro, 64.0, &title.to_string());
+        self.draw_text(x + 12.0, y + 148.0, &fonts.retro, 40.0, &title.url.to_string());
     }
 
     fn draw_opponent_bar(&mut self, opponent: &Player, fonts: &Fonts) {
@@ -273,15 +307,20 @@ impl Context {
     fn draw_chat_commands(&mut self, chat_commands: &Vec<Command>, fonts: &Fonts) {
         let (x, y) = COMMANDS_ORIGIN;
         let (width, height) = COMMANDS_DIMS;
-        let lines = chat_commands.into_iter().map(|c| c.to_string()).collect();
+        let lines = chat_commands
+            .into_iter()
+            .rev()
+            .take(14)
+            .map(|c| c.to_string()).collect();
         self.draw_box(x, y, width, height);
-        self.draw_lines(x + 12.0, y + 12.0, &fonts.retro, 42.0, &lines);
+        self.draw_text(x + 12.0, y + 12.0, &fonts.retro, 42.0, "Chat commands:");
+        self.draw_lines(x + 12.0, y + 64.0, &fonts.retro, 32.0, &lines);
     }
 
     fn draw_player_bar(&mut self, x: f32, y: f32, player: &Player, font: &Font) {
         let (width, height) = PLAYER_DIMS;
         self.draw_box(x, y, width, height);
-        self.draw_text(x + 12.0, y + 12.0, font, 32.0, &player.to_string());
+        self.draw_text(x + 12.0, y + 12.0, font, 40.0, &player.to_string());
     }
 
     // Utility functions.
@@ -318,11 +357,15 @@ impl Context {
 
     fn draw_lines(&mut self, x: f32, y: f32, font: &Font, size: f32, lines: &Vec<String>) {
         for (i, line) in lines.iter().enumerate() {
-            self.draw_text(x, y + (i as f32 * size), font, size, line);
+            self.draw_text(x, y + (i as f32 * size) + 4.0, font, size, line);
         }
     }
 
     fn draw_text(&mut self, x: f32, y: f32, font: &Font, size: f32, text: &str) {
+        self.draw_coloured_text(x, y, font, size, text, self.sources.black.clone())
+    }
+
+    fn draw_coloured_text(&mut self, x: f32, y: f32, font: &Font, size: f32, text: &str, source: SolidSource) {
         let options = DrawOptions::new();
 
         // Sourced and edited from: https://github.com/l4l/yofi/blob/53863d39b5c2c5709df280fba1da7a80dd924492/src/font/fdue.rs#L172-L227
@@ -349,10 +392,10 @@ impl Context {
 
             for (i, x) in b.into_iter().enumerate() {
                 let src = SolidSource::from_unpremultiplied_argb(
-                    (u32::from(x) * u32::from(self.sources.black.a) / 255) as u8,
-                    self.sources.black.r,
-                    self.sources.black.g,
-                    self.sources.black.b,
+                    (u32::from(x) * u32::from(source.a) / 255) as u8,
+                    source.r,
+                    source.g,
+                    source.b,
                 );
                 buffer[i] = (u32::from(src.a) << 24)
                     | (u32::from(src.r) << 16)

@@ -50,16 +50,16 @@ pub fn run(config: Config) -> crate::error::Result<()> {
 
 pub fn run_engine(stream_events: EventSender, config: Config) -> Result<()> {
     // std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build();
-        let Ok(runtime) = runtime else {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build();
+    let Ok(runtime) = runtime else {
             return Err(error::Error::Unknown("tokio runtime failed to build".to_string()));
         };
 
-        runtime.block_on(async move {
-            let mut engine = make_engine(stream_events, config);
-            engine.setup().await?;
-            engine.run().await
-        })
+    runtime.block_on(async move {
+        let mut engine = make_engine(stream_events, config);
+        engine.setup().await?;
+        engine.run().await
+    })
     // })
 }
 

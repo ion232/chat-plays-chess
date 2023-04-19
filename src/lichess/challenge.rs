@@ -42,6 +42,17 @@ impl ChallengeManager {
         &self.outbound
     }
 
+    pub fn cancel_outbound(&mut self) {
+        if let Some(outbound) = &self.outbound {
+            outbound.cancel_handle.abort();
+
+            // let challenge_id = outbound.challenge.challenge.base.id.to_string();
+            // let action = Action::Lichess(LichessAction::cancel_challenge(challenge_id));
+            // self.event_sender.send_action(action);
+        }
+        self.outbound = None;
+    }
+
     pub fn process_challenge(&mut self, challenge: ChallengeJson) {
         log::info!("Challenge event received: id: {}", challenge.base.id);
 

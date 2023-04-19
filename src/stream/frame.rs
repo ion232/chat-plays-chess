@@ -1,4 +1,4 @@
-use std::{fs::File, io::Write, path::PathBuf};
+use std::{fs::File, io::BufWriter, path::PathBuf};
 
 use crate::error::Result;
 
@@ -53,7 +53,16 @@ impl FrameManager {
     }
 
     pub fn write_frame(&mut self) -> std::io::Result<()> {
-        Ok(self.video_fifo.write_all(&self.current_frame.data)?)
+        let ref mut buffer_writer = BufWriter::new(self.video_fifo.try_clone().unwrap());
+
+        let mut encoder =
+            png::Encoder::new(buffer_writer, *self.current_frame.width, *self.current_frame.height);
+        encoder.set_color(*self.current_frame.color);
+        encoder.set_depth(*self.current_frame.depth);
+
+        let mut writer = encoder.write_header()?;
+
+        Ok(writer.write_image_data(&&self.current_frame.data)?)
     }
 }
 

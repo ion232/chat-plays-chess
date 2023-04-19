@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::time::Duration;
 use std::time::Instant;
 
 use chess::BoardStatus;
@@ -12,10 +13,13 @@ use lichess_api::model::Speed;
 use lichess_api::model::board::stream::game::GameFull;
 use lichess_api::model::board::stream::game::GameState;
 use lichess_api::model::board::stream::game::OpponentGone;
+use tokio::task::JoinHandle;
 
+use crate::engine::events::internal::Action;
 use crate::engine::events::internal::EventSender;
 use crate::engine::events::internal::GameNotification;
 use crate::engine::events::internal::Notification;
+use crate::stream::audio::Clip;
 use crate::stream::model::ClockSettings;
 use crate::stream::model::Player;
 use crate::stream::model::Timer;
@@ -42,6 +46,7 @@ pub struct Game {
     pub is_our_turn: bool,
     pub us: Player,
     pub opponent: Player,
+    pub timers_started: bool,
     pub finished: bool,
 }
 
@@ -60,7 +65,7 @@ impl GameManager {
         self.games.get(game_id)
     }
 
-    pub fn convert_move(&self, chess_move: String) -> Option<chess::ChessMove> {
+    pub fn convert_move(&mut self, chess_move: String) -> Option<chess::ChessMove> {
         let Some(game) = self.current_game() else {
             return None;
         };
@@ -80,10 +85,19 @@ impl GameManager {
         self.last_finished_game.as_ref()
     }
 
-    pub fn current_game(&self) -> Option<&Game> {
+    pub fn current_game(&mut self) -> Option<&Game> {
         let Some(current_game_id) = &self.current_game_id else {
             return None;
         };
+
+        let should_remove = self.games
+            .get(current_game_id)
+            .and_then(|game| game.finished.into())
+            .unwrap_or(false);
+
+        if should_remove {
+            _ = self.games.remove(current_game_id);
+        }
 
         self.games.get(current_game_id)
     }
@@ -99,24 +113,45 @@ impl GameManager {
             .map(|(id, _)| id.to_string())
     }
 
-    pub fn advance_game_time(&mut self) {
-        // self.current_game().unwrap().elapse_time(milliseconds)
+    pub fn advance_clocks(&mut self, duration: Duration) {
+        self.games.iter_mut().for_each(|(_, game)| game.elapse_time(duration.as_millis() as u64));
     }
 
     pub fn switch_game(&mut self, game_id: &str) {
         log::info!("Switching to game {}", &game_id);
 
+        let mut game_finished = false;
+
         let game_id = game_id.to_string();
-        if self.games.contains_key(&game_id) {
-            self.current_game_id = game_id.to_string().into();
-            self.event_sender
-                .send_notification(Notification::Game(GameNotification::NewCurrentGame));
+        if let Some(game) = self.games.get(&game_id) {
+            if game.finished {
+                game_finished = true;
+            } else {
+                self.current_game_id = game_id.to_string().into();
+                self.event_sender
+                    .send_notification(Notification::Game(GameNotification::NewCurrentGame));
+            }
         } else {
             log::warn!("[GameManager] Failed to switch to game {}", &game_id);
+        }
+
+        if game_finished {
+            if let Some(current_game_id) = &self.current_game_id {
+                if *current_game_id == game_id {
+                    self.current_game_id = None;
+                }
+            }
+            log::warn!("[GameManager] Removing finished game in switch game: {}", &game_id);
+            self.games.remove(&game_id);
+            self.event_sender.send_action(Action::FindNewGame);
         }
     }
 
     pub fn process_game_start(&mut self, game_info: &GameEventInfo) {
+        if self.current_game_id.is_some() {
+            return;
+        }
+
         let game_id = game_info.game_id.clone();
         let game = Game::from_game_start(game_info);
 
@@ -133,27 +168,20 @@ impl GameManager {
         let game_id = game_info.game_id.clone();
         if let Some(game) = self.games.get_mut(&game_id) {
             game.process_game_info(game_info);
+            game.finished = true;
         } else {
             log::warn!("[GameManager] Failed to find game {} during process game finish", &game_id);
         }
 
-        self.event_sender.send_notification(Notification::Game(GameNotification::GameFinished));
+        // let Some(finished_game) = self.games.remove(&game_id) else {
+        //     log::warn!("[GameManager] Failed to remove game {} during process game finish", &game_id);
+        //     return;
+        // };
 
-        let Some(finished_game) = self.games.remove(&game_id) else {
-            log::warn!("[GameManager] Failed to remove game {} during process game finish", &game_id);
-            return;
-        };
-
-        let Some(current_game_id) = &self.current_game_id else {
-            log::warn!("[GameManager] Failed to get current game id {} during process game finish", &game_id);
-            return;
-        };
-
-        if finished_game.game_id == *current_game_id {
-            log::info!("[GameManager] Removing current game id {}", finished_game.game_id);
-            self.current_game_id = None;
-            self.last_finished_game = finished_game.into();
-        }
+        // let Some(current_game_id) = &self.current_game_id else {
+        //     log::warn!("[GameManager] Failed to get current game id {} during process game finish", &game_id);
+        //     return;
+        // };
     }
 
     pub fn process_game_full(&mut self, game_full: &GameFull) {
@@ -167,6 +195,10 @@ impl GameManager {
         *game = Game::from_game_full(&self.our_id, game_full);
 
         if game.finished {
+            let current_game_id = self.current_game_id.clone().unwrap_or("".to_string());
+            if game.game_id.to_string() == current_game_id {
+                self.current_game_id = None;
+            }
             return;
         }
 
@@ -187,22 +219,66 @@ impl GameManager {
             return;
         };
 
+        let is_current_game = if let Some(current_game_id) = &self.current_game_id {
+            *current_game_id == game_id.to_string()
+        } else {
+            false
+        };
+
         let previous_board = game.board.clone();
         game.process_game_state(&game_state);
 
+        if is_current_game {
+            if let Some(last_move) = game.last_move {
+                let clip = if previous_board.piece_on(last_move.get_dest()).is_some() {
+                    Clip::Capture
+                } else {
+                    Clip::Move
+                };
+
+                self.event_sender.send_action(Action::PlayClip(clip));
+            }
+        }
+
         if game.finished {
+            if is_current_game {
+                let clip = if let Some(winner) = &game_state.winner {
+                    let our_color = match game.us.color {
+                        chess::Color::White => "white",
+                        chess::Color::Black => "black",
+                    }
+                    .to_string();
+
+                    if *winner == our_color {
+                        Clip::Win
+                    } else {
+                        Clip::Loss
+                    }
+                } else {
+                    Clip::Draw
+                };
+
+                self.event_sender.send_action(Action::PlayClip(clip));
+                self.event_sender
+                    .send_notification(Notification::Game(GameNotification::GameFinished));
+
+                log::info!("[GameManager] Removing current game id {}", game.game_id);
+
+                self.current_game_id = None;
+                self.last_finished_game = Some(game.clone());
+            }
+
             return;
         }
 
         let game_id = game.game_id.to_string();
         let notification = if game.is_our_turn {
-            GameNotification::OurTurn { game_id }
+            GameNotification::OurTurn { game_id: game_id.to_string() }
         } else {
-            GameNotification::TheirTurn { game_id }
+            GameNotification::TheirTurn { game_id: game_id.to_string() }
         };
         let notification = Notification::Game(notification);
 
-        // To avoid requiring a mut ref.
         self.event_sender.clone().send_notification(notification);
 
         if game.board != previous_board {
@@ -215,8 +291,6 @@ impl GameManager {
     }
 
     pub fn process_opponent_gone(&mut self, opponent_gone: &OpponentGone) {
-        // Might use this to switch games so the timer doesn't have to run out.
-        // Will see - it introduces a lot of complexity.
         _ = opponent_gone;
     }
 }
@@ -260,17 +334,17 @@ impl Game {
             us,
             opponent,
             finished: false,
+            timers_started: false,
         }
     }
 
     pub fn from_game_full(our_id: &str, game: &GameFull) -> Self {
-        let board = board_from_api_fen(game.initial_fen.clone());
+        let mut board = board_from_api_fen(game.initial_fen.clone());
 
         let our_name = "Twitch".to_string();
         let our_color = color_from_game(game, &our_id).unwrap();
 
-        let is_our_turn = our_color == board.side_to_move();
-        let move_history = Default::default();
+        let mut move_history = Default::default();
 
         let timer_millis = game.clock.clone().map(|c| c.initial).unwrap_or_default() as u64;
         let timer = Timer::new(timer_millis);
@@ -304,6 +378,7 @@ impl Game {
             };
             (us, opponent)
         };
+
         let mut last_move = None;
 
         if let Some(game_state) = &game.state {
@@ -314,14 +389,23 @@ impl Game {
                 us.timer = Timer::new(game_state.wtime);
                 opponent.timer = Timer::new(game_state.btime);
             }
-            last_move =
-                game_state.moves.split(" ").last().and_then(|m| chess::ChessMove::from_str(m).ok());
+
+            let moves: Vec<&str> = game_state.moves.split(" ").collect();
+
+            move_history = moves.iter().map(|m| m.to_string()).collect();
+            last_move = moves.last().and_then(|m| chess::ChessMove::from_str(m).ok());
+
+            if let Some(new_board) = board_from_moves(moves.clone()) {
+                board = new_board;
+            }
         }
 
         let clock_settings = game
             .clock
             .clone()
             .map(|c| ClockSettings { limit: c.initial / 60000, increment: c.increment / 1000 });
+
+        let is_our_turn = our_color == board.side_to_move();
 
         Self {
             game_id: game.id.to_string(),
@@ -335,11 +419,12 @@ impl Game {
             us,
             opponent,
             finished: false,
+            timers_started: false,
         }
     }
 
     pub fn elapse_time(&mut self, milliseconds: u64) {
-        if self.finished {
+        if self.finished || !self.timers_started {
             return;
         }
 
@@ -359,7 +444,9 @@ impl Game {
 
         self.opponent.name =
             game.opponent.id.as_ref().unwrap_or(&game.opponent.username).to_string();
-        self.opponent.rating = game.opponent.rating;
+        if self.opponent.rating.is_none() {
+            self.opponent.rating = game.opponent.rating;
+        }
         self.is_our_turn = game.is_my_turn;
     }
 
@@ -367,6 +454,7 @@ impl Game {
         let moves: Vec<&str> = game.moves.split(" ").collect();
         self.move_history = moves.iter().map(|m| m.to_string()).collect();
         self.last_move = moves.last().map(|m| chess::ChessMove::from_str(m).ok()).flatten();
+        self.timers_started = self.move_history.len() >= 2;
 
         let Some(board) = board_from_moves(moves) else {
             log::warn!("Board status for game {} is no longer ongoing", self.game_id);

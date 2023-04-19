@@ -48,9 +48,10 @@ impl EventManager {
         let sender = sender.clone();
 
         let handle = tokio::spawn(async move {
+            type IRCClient = TwitchIRCClient<SecureTCPTransport, StaticLoginCredentials>;
+
             let config = ClientConfig::default();
-            let (mut incoming_messages, client) =
-                TwitchIRCClient::<SecureTCPTransport, StaticLoginCredentials>::new(config);
+            let (mut incoming_messages, client) = IRCClient::new(config);
 
             client.join(channel).unwrap();
 
@@ -68,9 +69,10 @@ impl EventManager {
 
                         sender.send(Ok(twitch_event)).unwrap_or_default()
                     }
-                    _ => {},
+                    _ => {}
                 }
             }
+
             log::warn!("Twitch IRC stream task finished!")
         });
 

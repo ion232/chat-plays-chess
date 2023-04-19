@@ -2,9 +2,9 @@
 
 capture: Edited from [here](https://pixabay.com/sound-effects/chess-pieces-60890/)
 lobby: Edited from [here](https://pixabay.com/sound-effects/very-lush-and-swag-loop-74140/)
-loss and draw: [here](https://pixabay.com/sound-effects/blip-131856/)
+draw: [here](https://pixabay.com/sound-effects/blip-131856/)
 move: Edited from [here](https://pixabay.com/sound-effects/chess-pieces-60890/)
-resign: [here](https://pixabay.com/sound-effects/chess-pieces-hitting-wooden-board-99336/)
+loss: [here](https://pixabay.com/sound-effects/chess-pieces-hitting-wooden-board-99336/)
 start: [here](https://pixabay.com/sound-effects/board-start-38127/)
 win: [here](https://pixabay.com/sound-effects/beep3-98810/)
 

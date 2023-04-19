@@ -1,11 +1,10 @@
 source "./scripts/common.sh"
 
-function default_audio_input() {
-    if [ $kernel_name = "Linux" ]; then
-        echo "-f alsa -i hw:0"
-    elif [ $kernel_name = "Darwin" ] ; then
-        echo '-f avfoundation -i ":default"'
-    fi
+function run_twitch_stream() {
+    local stream_key="$TWITCH_STREAM_KEY"
+    local ingestion_server="$TWITCH_INGESTION_SERVER"
+
+    live_stream "rtmp://$ingestion_server/app/$stream_key"
 }
 
 function live_stream() {
@@ -17,12 +16,14 @@ function live_stream() {
 
     local rtmp_endpoint="$1"
 
-    ffmpeg $audio_input $video_input $audio_options $video_options $rtmp_endpoint
+    # echo "Command: ffmpeg $audio_input $video_input $audio_options $video_options $rtmp_endpoint"
+    ffmpeg -analyzeduration 100M -probesize 500M $audio_input $video_input $audio_options $video_options $rtmp_endpoint
 }
 
-function run_twitch_stream() {
-    local stream_key="$STREAM_KEY"
-    local ingestion_server="$INGESTION_SERVER"
-
-    live_stream "rtmp://$ingestion_server/app/$stream_key"
+function default_audio_input() {
+    if [ $kernel_name = "Linux" ]; then
+        echo "-f alsa -i hw:0"
+    elif [ $kernel_name = "Darwin" ] ; then
+        echo "-f avfoundation -i :default"
+    fi
 }

@@ -36,7 +36,7 @@ impl Manager {
     }
 
     pub fn setup(&mut self) {
-        self.audio_manager.setup();
+        _ = self.audio_manager.setup();
         self.font_cache.setup();
         self.image_cache.setup();
     }

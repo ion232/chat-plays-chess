@@ -2,6 +2,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::lichess::action::Action as LichessAction;
 use crate::lichess::game::GameId;
+use crate::stream::audio::Clip;
 use crate::twitch::action::Action as TwitchAction;
 use crate::twitch::events::ChatCommand;
 
@@ -25,6 +26,7 @@ pub enum Event {
 pub enum Action {
     Lichess(LichessAction),
     Twitch(TwitchAction),
+    PlayClip(Clip),
     FindNewGame,
     SwitchGame(GameId),
     Shutdown,
@@ -37,7 +39,7 @@ pub enum Notification {
     OutboundChallengeNullified,
     GameVotesChanged,
     SettingsChanged,
-    OpponentSearchStarted,
+    ChallengeSent { id: String, rating: u32 },
     Game(GameNotification),
 }
 

@@ -47,9 +47,9 @@ impl EventManager {
     }
 
     pub async fn finish_streaming_game(&mut self, game_id: &str) {
-        log::info!("Waiting for game {} to finish...", &game_id);
+        log::info!("Aborting finished game {}...", &game_id);
         if let Some(handle) = self.game_handles.get_mut(game_id) {
-            _ = handle.await;
+            _ = handle.abort();
         }
         log::info!("Game {} finished!", &game_id);
     }

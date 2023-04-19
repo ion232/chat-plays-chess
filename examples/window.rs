@@ -1,8 +1,7 @@
 use chat_plays_chess::config;
 use chat_plays_chess::stream::draw::{FRAME_DIMS_U32, FRAME_PIXEL_COUNT};
 
-use std::io::Write;
-use std::{fs::File, io::Read, path::PathBuf};
+use std::{fs::File, path::PathBuf};
 
 const BYTES_IN_PIXEL: usize = 4;
 
@@ -23,40 +22,38 @@ impl Window {
         let window = minifb::Window::new(name, width, height, options).unwrap();
         let frame_buffer = vec![0; BYTES_IN_PIXEL * FRAME_PIXEL_COUNT];
         let video_fifo = File::open(video_fifo).unwrap();
-    
+
         Self { width, height, window, frame_buffer, video_fifo }
     }
 }
 
 impl Window {
-    fn run(&mut self) {
-        while let Some(mut frame_buffer) = self.read_frame() {
+    fn run(&mut self) -> Result<(), png::DecodingError> {
+        loop {
+            let mut frame_buffer = self.read_frame()?;
             _ = self.window.update_with_buffer(&mut frame_buffer, self.width, self.height);
         }
     }
 
-    fn read_frame(&mut self) -> Option<Vec<u32>> {
-        if let Err(error) = self.video_fifo.read_exact(&mut self.frame_buffer) {
-            match error.kind() {
-                std::io::ErrorKind::UnexpectedEof => {
-                    panic!("Error reading from video fifo: {}", error.to_string());
-                }
-                _ => return None,
-            }
-        }
+    fn read_frame(&mut self) -> Result<Vec<u32>, png::DecodingError> {
+        let decoder = png::Decoder::new(self.video_fifo.try_clone().unwrap());
 
-        let frame_buffer: Vec<u32> = self.frame_buffer
+        let mut reader = decoder.read_info()?;
+        _ = reader.next_frame(&mut self.frame_buffer)?;
+
+        let frame_buffer: Vec<u32> = self
+            .frame_buffer
             .chunks_exact(BYTES_IN_PIXEL)
             .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect();
 
-        frame_buffer.into()
+        Ok(frame_buffer)
     }
 }
 
 fn main() {
     let Ok(config) = config::load_config() else {
-        println!("Failed to load config!");
+        println!("Window: Failed to load config!");
         return;
     };
 
