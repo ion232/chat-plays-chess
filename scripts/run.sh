@@ -5,12 +5,6 @@ source "./scripts/stream.sh"
 
 set -e
 
-export LICHESS_AUTH=""
-export LICHESS_ID=""
-export TWITCH_ACCOUNT=""
-export TWITCH_STREAM_KEY=""
-export TWITCH_INGESTION_SERVER=""
-
 export RUST_LOG=debug
 
 function main() {
